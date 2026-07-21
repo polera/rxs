@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Engineering Notes</title>
+    <link>https://example.com/</link>
+    <description>Example RSS fixture</description>
+    <item>
+      <guid isPermaLink="false">post-1</guid>
+      <title>SQLite improvements</title>
+      <link>https://example.com/sqlite</link>
+      <author>editor@example.com (Example Editor)</author>
+      <pubDate>Mon, 20 Jul 2026 12:00:00 GMT</pubDate>
+      <description><![CDATA[<p>Fast, durable, and <strong>local</strong>.</p>]]></description>
+    </item>
+  </channel>
+</rss>

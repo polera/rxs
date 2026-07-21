@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Terminal Design</title>
+  <link href="https://example.org/"/>
+  <updated>2026-07-20T10:00:00Z</updated>
+  <id>https://example.org/feed</id>
+  <entry>
+    <title>Three useful panes</title>
+    <link href="https://example.org/panes"/>
+    <id>tag:example.org,2026:panes</id>
+    <updated>2026-07-20T10:00:00Z</updated>
+    <author><name>A. Reader</name></author>
+    <content type="html">&lt;p&gt;Feeds, articles, and reader.&lt;/p&gt;</content>
+  </entry>
+</feed>

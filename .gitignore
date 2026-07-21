@@ -1,0 +1,6 @@
+/rxs
+/dist/
+*.db
+*.db-shm
+*.db-wal
+
