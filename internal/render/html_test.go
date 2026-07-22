@@ -37,3 +37,26 @@ func TestLinksResolvesRelativeURLsAndFiltersSchemes(t *testing.T) {
 		}
 	}
 }
+
+func TestTextWithLinksFormatsAnchorTextInPlace(t *testing.T) {
+	fragment := `<p>Read <a href="/related"><strong>the related</strong> article</a> next.</p>
+		<p><a href="mailto:hello@example.test">Email us</a> instead.</p>`
+	got, links := TextWithLinks(fragment, "https://example.test/articles/one", func(index int, link Link, text string) string {
+		return "<" + text + "|" + link.URL + ">"
+	})
+	want := "Read <the related article|https://example.test/related> next.\n\nEmail us instead."
+	if got != want {
+		t.Fatalf("TextWithLinks() = %q, want %q", got, want)
+	}
+	if len(links) != 1 || links[0] != (Link{Text: "the related article", URL: "https://example.test/related"}) {
+		t.Fatalf("TextWithLinks() links = %#v", links)
+	}
+}
+
+func TestTextWithLinksWithoutFormatterMatchesText(t *testing.T) {
+	fragment := `<p>Space<a href="https://example.test"> around </a>this link.</p>`
+	got, _ := TextWithLinks(fragment, "", nil)
+	if want := Text(fragment); got != want {
+		t.Fatalf("TextWithLinks() = %q, Text() = %q", got, want)
+	}
+}

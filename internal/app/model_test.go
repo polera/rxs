@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/polera/rxs/internal/domain"
+	"github.com/polera/rxs/internal/ui"
 )
 
 type fakeStore struct {
@@ -82,6 +85,52 @@ func loadedModel(t *testing.T) (Model, *fakeStore) {
 		t.Fatal("loading unexpectedly returned a command")
 	}
 	return model, store
+}
+
+func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {
+	styles, err := ui.ResolveScheme("solarized-light")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		feeds: []domain.Feed{{ID: 1, Title: "Feed", LastError: "refresh failed"}},
+		entries: []domain.Entry{{
+			ID: 1, Title: "Article", FeedTitle: "Feed", URL: "https://example.test/article",
+			HTML: `<p>Visit <a href="/reference">the reference</a>.</p>`, Text: "Visit the reference.",
+		}},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil }, styles)
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
+
+	view := model.View()
+	if !reflect.DeepEqual(view.ForegroundColor, styles.Scheme.Foreground) ||
+		!reflect.DeepEqual(view.BackgroundColor, styles.Scheme.Background) {
+		t.Fatalf("view base colors = %#v on %#v, want %#v on %#v", view.ForegroundColor, view.BackgroundColor, styles.Scheme.Foreground, styles.Scheme.Background)
+	}
+	if selected := model.menuLine(0, "All", 0, 20); selected != styles.Selected.Width(20).Render("All 0") {
+		t.Fatalf("selected row = %q", selected)
+	}
+	if feedView := model.feedsView(30); !strings.Contains(feedView, styles.Danger.Render("  refresh failed")) {
+		t.Fatalf("feed error does not use danger style: %q", feedView)
+	}
+
+	model.setReaderContent(store.entries[0])
+	wantLink := styles.Link.Hyperlink("https://example.test/reference", "id=rxs-link-0").Render("the reference")
+	if content := model.reader.GetContent(); !strings.Contains(content, wantLink) {
+		t.Fatalf("reader link does not use link style: %q", content)
+	}
+
+	model.overlay = addOverlay
+	overlay := model.View()
+	if !reflect.DeepEqual(overlay.ForegroundColor, styles.Scheme.Foreground) ||
+		!reflect.DeepEqual(overlay.BackgroundColor, styles.Scheme.Background) {
+		t.Fatal("overlay did not retain the theme base colors")
+	}
+	inputStyles := model.input.Styles()
+	if !reflect.DeepEqual(inputStyles.Cursor.Color, styles.Scheme.Accent) ||
+		inputStyles.Focused.Placeholder.Render("hint") != styles.Dim.Render("hint") {
+		t.Fatal("text input did not use the theme styles")
+	}
 }
 
 func TestHighlightDoesNotMarkReadButOpeningDoes(t *testing.T) {
@@ -267,6 +316,15 @@ func TestReaderLinksCanBeSelectedAndOpened(t *testing.T) {
 	model, _ = update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
 	model, _ = update(t, model, key('l'))
 	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	content := model.reader.GetContent()
+	plain := ansi.Strip(content)
+	if !strings.Contains(plain, "Read the related article next.") || strings.Contains(plain, "[1]") ||
+		strings.Contains(plain, "\nLinks\n") || strings.Contains(plain, "https://example.test/related") {
+		t.Fatalf("reader content did not keep the link inline: %q", plain)
+	}
+	if !strings.Contains(content, ansi.SetHyperlink("https://example.test/related", "id=rxs-link-0")) {
+		t.Fatalf("reader content did not hyperlink the anchor text: %q", content)
+	}
 	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
 	if model.readerLinkCursor != 0 || !strings.Contains(model.status, "the related article") {
 		t.Fatalf("selected link = %d, status = %q", model.readerLinkCursor, model.status)

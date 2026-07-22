@@ -14,14 +14,21 @@ import (
 )
 
 const (
-	BrowserSystem = "system"
-	BrowserTUI    = "tui"
+	BrowserSystem      = "system"
+	BrowserTUI         = "tui"
+	DefaultColorScheme = "default"
 )
 
 // Config contains machine-local behavior that should not be stored in the
 // subscriptions database.
 type Config struct {
-	Browser BrowserConfig `json:"browser"`
+	Browser    BrowserConfig    `json:"browser"`
+	Appearance AppearanceConfig `json:"appearance"`
+}
+
+// AppearanceConfig contains visual settings for the terminal interface.
+type AppearanceConfig struct {
+	ColorScheme string `json:"color_scheme"`
 }
 
 // BrowserConfig selects either the operating system browser or an interactive
@@ -33,7 +40,10 @@ type BrowserConfig struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Browser: BrowserConfig{Mode: BrowserSystem}}
+	return Config{
+		Browser:    BrowserConfig{Mode: BrowserSystem},
+		Appearance: AppearanceConfig{ColorScheme: DefaultColorScheme},
+	}
 }
 
 // LoadConfig reads a JSON configuration file. A missing file is equivalent to
@@ -60,6 +70,10 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 	config.Browser.Mode = strings.ToLower(strings.TrimSpace(config.Browser.Mode))
+	config.Appearance.ColorScheme = strings.ToLower(strings.TrimSpace(config.Appearance.ColorScheme))
+	if config.Appearance.ColorScheme == "" {
+		config.Appearance.ColorScheme = DefaultColorScheme
+	}
 	switch config.Browser.Mode {
 	case BrowserSystem:
 		return config, nil

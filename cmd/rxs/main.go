@@ -15,6 +15,7 @@ import (
 	feedservice "github.com/polera/rxs/internal/feed"
 	"github.com/polera/rxs/internal/platform"
 	"github.com/polera/rxs/internal/store"
+	"github.com/polera/rxs/internal/ui"
 )
 
 var (
@@ -77,6 +78,10 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	styles, err := ui.ResolveScheme(config.Appearance.ColorScheme)
+	if err != nil {
+		return err
+	}
 	repository, err := openStore(*dbPath)
 	if err != nil {
 		return err
@@ -88,9 +93,9 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	if config.Browser.Mode == platform.BrowserTUI {
 		model = app.NewWithTUIBrowser(repository, refresher, func(rawURL string) (*exec.Cmd, error) {
 			return platform.BrowserCommand(config.Browser, rawURL)
-		})
+		}, styles)
 	} else {
-		model = app.New(repository, refresher, platform.OpenBrowser)
+		model = app.New(repository, refresher, platform.OpenBrowser, styles)
 	}
 	_, err = tea.NewProgram(model).Run()
 	return err

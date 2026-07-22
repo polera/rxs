@@ -2,6 +2,7 @@
 package render
 
 import (
+	"fmt"
 	"html"
 	"net/url"
 	"regexp"
@@ -20,6 +21,10 @@ type Link struct {
 	URL  string
 }
 
+// LinkFormatter renders the visible text for a hyperlink. The index matches
+// the link's position in the slice returned by TextWithLinks.
+type LinkFormatter func(index int, link Link, text string) string
+
 // Text extracts human-readable text while retaining useful block boundaries.
 func Text(fragment string) string {
 	if strings.TrimSpace(fragment) == "" {
@@ -33,7 +38,32 @@ func Text(fragment string) string {
 	for _, node := range nodes {
 		writeNode(&b, node)
 	}
-	lines := strings.Split(strings.ReplaceAll(b.String(), "\u00a0", " "), "\n")
+	return cleanText(b.String())
+}
+
+// TextWithLinks extracts readable text and preserves valid HTTP(S) anchors in
+// place. The formatter can add terminal hyperlink/style sequences around the
+// anchor's visible words; when it is nil, plain text is returned.
+func TextWithLinks(fragment, baseURL string, formatter LinkFormatter) (string, []Link) {
+	if strings.TrimSpace(fragment) == "" {
+		return "", nil
+	}
+	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
+	if err != nil {
+		return strings.TrimSpace(html.UnescapeString(stripTags(fragment))), nil
+	}
+	base, _ := url.Parse(strings.TrimSpace(baseURL))
+	var b strings.Builder
+	var links []Link
+	for _, node := range nodes {
+		writeLinkedNode(&b, node, base, &links)
+	}
+	content := cleanText(b.String())
+	return formatLinkMarkers(content, links, formatter), links
+}
+
+func cleanText(content string) string {
+	lines := strings.Split(strings.ReplaceAll(content, "\u00a0", " "), "\n")
 	cleaned := make([]string, 0, len(lines))
 	blank := true
 	for _, line := range lines {
@@ -58,47 +88,81 @@ func Text(fragment string) string {
 // against baseURL; unsupported schemes are omitted because the application
 // deliberately only hands HTTP(S) URLs to browsers.
 func Links(fragment, baseURL string) []Link {
-	if strings.TrimSpace(fragment) == "" {
-		return nil
-	}
-	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
-	if err != nil {
-		return nil
-	}
-	base, _ := url.Parse(strings.TrimSpace(baseURL))
-	var links []Link
-	for _, node := range nodes {
-		collectLinks(node, base, &links)
-	}
+	_, links := TextWithLinks(fragment, baseURL, nil)
 	return links
 }
 
-func collectLinks(node *xhtml.Node, base *url.URL, links *[]Link) {
-	if node.Type == xhtml.ElementNode && node.Data == "a" {
-		var href string
-		for _, attr := range node.Attr {
-			if strings.EqualFold(attr.Key, "href") {
-				href = strings.TrimSpace(attr.Val)
-				break
-			}
-		}
-		if target, ok := resolveHTTPURL(href, base); ok {
-			label := strings.TrimSpace(whitespace.ReplaceAllString(nodeText(node), " "))
-			if label == "" {
-				label = target
-			}
-			*links = append(*links, Link{Text: label, URL: target})
-		}
-	}
+func writeLinkedNode(b *strings.Builder, node *xhtml.Node, base *url.URL, links *[]Link) {
 	if node.Type == xhtml.ElementNode {
 		switch node.Data {
 		case "script", "style", "noscript", "svg":
 			return
+		case "a":
+			if target, ok := nodeHTTPURL(node, base); ok {
+				index := len(*links)
+				label := strings.Join(strings.Fields(visibleNodeText(node)), " ")
+				if label == "" {
+					label = target
+				}
+				*links = append(*links, Link{Text: label, URL: target})
+				b.WriteString(linkMarker(index, "start"))
+				for child := node.FirstChild; child != nil; child = child.NextSibling {
+					writeLinkedNode(b, child, base, links)
+				}
+				b.WriteString(linkMarker(index, "end"))
+				return
+			}
 		}
 	}
+	writeNodeShallow(b, node)
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		collectLinks(child, base, links)
+		writeLinkedNode(b, child, base, links)
 	}
+	writeNodeEnd(b, node)
+}
+
+func nodeHTTPURL(node *xhtml.Node, base *url.URL) (string, bool) {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, "href") {
+			return resolveHTTPURL(strings.TrimSpace(attr.Val), base)
+		}
+	}
+	return "", false
+}
+
+func linkMarker(index int, edge string) string {
+	return fmt.Sprintf("\x00rxs-link-%d-%s\x00", index, edge)
+}
+
+func formatLinkMarkers(content string, links []Link, formatter LinkFormatter) string {
+	for index, link := range links {
+		start := linkMarker(index, "start")
+		end := linkMarker(index, "end")
+		startAt := strings.Index(content, start)
+		endAt := strings.Index(content, end)
+		if startAt < 0 || endAt < startAt {
+			continue
+		}
+		visibleStart := startAt + len(start)
+		visible := content[visibleStart:endAt]
+		leading := len(visible) - len(strings.TrimLeftFunc(visible, unicode.IsSpace))
+		trailing := len(visible) - len(strings.TrimRightFunc(visible, unicode.IsSpace))
+		coreEnd := len(visible) - trailing
+		if coreEnd < leading {
+			coreEnd = leading
+		}
+		core := visible[leading:coreEnd]
+		if core == "" {
+			core = link.Text
+		}
+		rendered := core
+		if formatter != nil {
+			rendered = formatter(index, link, core)
+		}
+		replacement := visible[:leading] + rendered + visible[coreEnd:]
+		content = content[:startAt] + replacement + content[endAt+len(end):]
+	}
+	return content
 }
 
 func resolveHTTPURL(href string, base *url.URL) (string, bool) {
@@ -121,10 +185,13 @@ func resolveHTTPURL(href string, base *url.URL) (string, bool) {
 	return target.String(), true
 }
 
-func nodeText(node *xhtml.Node) string {
+func visibleNodeText(node *xhtml.Node) string {
 	var b strings.Builder
 	var walk func(*xhtml.Node)
 	walk = func(current *xhtml.Node) {
+		if current.Type == xhtml.ElementNode && isHiddenElement(current.Data) {
+			return
+		}
 		if current.Type == xhtml.TextNode {
 			b.WriteString(current.Data)
 		}
@@ -137,10 +204,19 @@ func nodeText(node *xhtml.Node) string {
 }
 
 func writeNode(b *strings.Builder, node *xhtml.Node) {
+	if node.Type == xhtml.ElementNode && isHiddenElement(node.Data) {
+		return
+	}
+	writeNodeShallow(b, node)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		writeNode(b, child)
+	}
+	writeNodeEnd(b, node)
+}
+
+func writeNodeShallow(b *strings.Builder, node *xhtml.Node) {
 	if node.Type == xhtml.ElementNode {
 		switch node.Data {
-		case "script", "style", "noscript", "svg":
-			return
 		case "br", "hr":
 			newline(b)
 		case "li":
@@ -157,15 +233,24 @@ func writeNode(b *strings.Builder, node *xhtml.Node) {
 		}, node.Data)
 		b.WriteString(text)
 	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		writeNode(b, child)
-	}
+}
+
+func writeNodeEnd(b *strings.Builder, node *xhtml.Node) {
 	if node.Type == xhtml.ElementNode {
 		switch node.Data {
 		case "p", "div", "article", "section", "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "li", "ul", "ol", "blockquote", "pre", "table", "tr":
 			newline(b)
 			newline(b)
 		}
+	}
+}
+
+func isHiddenElement(name string) bool {
+	switch name {
+	case "script", "style", "noscript", "svg":
+		return true
+	default:
+		return false
 	}
 }
 

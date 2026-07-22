@@ -71,6 +71,25 @@ Links and original articles open in the system browser by default. To use an int
 
 `command` is executed directly, without a shell. The article URL replaces `{url}` in an argument; if no argument contains `{url}`, it is appended. Use `-config PATH` for a different local configuration file. Set `"mode"` to `"system"` (or remove the file) to use the operating system browser.
 
+### Color schemes
+
+The terminal interface includes `default`, `dracula`, `gruvbox-dark`, `nord`,
+`solarized-dark`, and `solarized-light`. Select one in the same `config.json`:
+
+```json
+{
+  "appearance": {
+    "color_scheme": "nord"
+  }
+}
+```
+
+Names are case-insensitive and surrounding whitespace is ignored. Missing
+appearance configuration uses `default`, which preserves the original terminal
+colors. The foreground and background are both set for named schemes so light
+schemes remain readable. Use `-config PATH` to load the setting from another
+file.
+
 Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional.
 
 ## Develop

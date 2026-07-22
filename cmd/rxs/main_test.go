@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,5 +61,21 @@ func TestUnknownSubcommandIsRejected(t *testing.T) {
 	err := runArgs([]string{"remove"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), `unknown command "remove"`) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestInvalidColorSchemeIsRejectedBeforeDatabaseOpen(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "data", "rxs.db")
+	if err := os.WriteFile(configPath, []byte(`{"appearance":{"color_scheme":"midnight"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := runArgs([]string{"-config", configPath, "-db", dbPath}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "unknown color scheme") || !strings.Contains(err.Error(), "solarized-light") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Dir(dbPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("database directory was created before scheme validation: %v", statErr)
 	}
 }

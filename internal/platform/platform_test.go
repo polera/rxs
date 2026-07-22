@@ -37,6 +37,23 @@ func TestLoadConfigDefaultsWhenMissing(t *testing.T) {
 	if config.Browser.Mode != BrowserSystem {
 		t.Fatalf("browser mode = %q, want %q", config.Browser.Mode, BrowserSystem)
 	}
+	if config.Appearance.ColorScheme != DefaultColorScheme {
+		t.Fatalf("color scheme = %q, want %q", config.Appearance.ColorScheme, DefaultColorScheme)
+	}
+}
+
+func TestLoadAppearanceConfigNormalizesColorScheme(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"appearance":{"color_scheme":"  SoLaRiZeD-LiGhT  "}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Appearance.ColorScheme != "solarized-light" {
+		t.Fatalf("color scheme = %q, want %q", config.Appearance.ColorScheme, "solarized-light")
+	}
 }
 
 func TestLoadTUIBrowserConfig(t *testing.T) {

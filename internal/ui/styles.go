@@ -1,20 +1,165 @@
 package ui
 
-import "charm.land/lipgloss/v2"
+import (
+	"fmt"
+	"image/color"
+	"sort"
+	"strings"
 
-var (
-	Accent   = lipgloss.Color("63")
-	Muted    = lipgloss.Color("244")
-	Danger   = lipgloss.Color("203")
-	Success  = lipgloss.Color("42")
-	Selected = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(Accent).Bold(true)
-	Dim      = lipgloss.NewStyle().Foreground(Muted)
+	"charm.land/lipgloss/v2"
 )
 
-func Pane(title string, active bool, width, height int, content string) string {
-	color := Muted
+const DefaultScheme = "default"
+
+// Scheme is a palette of semantic colors. Palette values are kept separate
+// from rendered styles so every part of the UI uses the same roles.
+type Scheme struct {
+	Foreground          color.Color
+	Background          color.Color
+	Accent              color.Color
+	Muted               color.Color
+	Danger              color.Color
+	Success             color.Color
+	Selection           color.Color
+	SelectionForeground color.Color
+	Link                color.Color
+	SearchMatch         color.Color
+}
+
+// Styles contains the immutable styles derived from a Scheme.
+type Styles struct {
+	Name        string
+	Scheme      Scheme
+	Base        lipgloss.Style
+	Selected    lipgloss.Style
+	Dim         lipgloss.Style
+	Danger      lipgloss.Style
+	Success     lipgloss.Style
+	Link        lipgloss.Style
+	SearchMatch lipgloss.Style
+}
+
+var schemes = map[string]Scheme{
+	DefaultScheme: {
+		Accent:              lipgloss.Color("63"),
+		Muted:               lipgloss.Color("244"),
+		Danger:              lipgloss.Color("203"),
+		Success:             lipgloss.Color("42"),
+		Selection:           lipgloss.Color("63"),
+		SelectionForeground: lipgloss.Color("230"),
+		Link:                lipgloss.Color("63"),
+		SearchMatch:         lipgloss.Color("63"),
+	},
+	"dracula": {
+		Foreground:          lipgloss.Color("#f8f8f2"),
+		Background:          lipgloss.Color("#282a36"),
+		Accent:              lipgloss.Color("#bd93f9"),
+		Muted:               lipgloss.Color("#6272a4"),
+		Danger:              lipgloss.Color("#ff5555"),
+		Success:             lipgloss.Color("#50fa7b"),
+		Selection:           lipgloss.Color("#44475a"),
+		SelectionForeground: lipgloss.Color("#f8f8f2"),
+		Link:                lipgloss.Color("#8be9fd"),
+		SearchMatch:         lipgloss.Color("#f1fa8c"),
+	},
+	"gruvbox-dark": {
+		Foreground:          lipgloss.Color("#ebdbb2"),
+		Background:          lipgloss.Color("#282828"),
+		Accent:              lipgloss.Color("#d79921"),
+		Muted:               lipgloss.Color("#928374"),
+		Danger:              lipgloss.Color("#fb4934"),
+		Success:             lipgloss.Color("#b8bb26"),
+		Selection:           lipgloss.Color("#504945"),
+		SelectionForeground: lipgloss.Color("#fbf1c7"),
+		Link:                lipgloss.Color("#83a598"),
+		SearchMatch:         lipgloss.Color("#fabd2f"),
+	},
+	"nord": {
+		Foreground:          lipgloss.Color("#d8dee9"),
+		Background:          lipgloss.Color("#2e3440"),
+		Accent:              lipgloss.Color("#88c0d0"),
+		Muted:               lipgloss.Color("#7b88a1"),
+		Danger:              lipgloss.Color("#bf616a"),
+		Success:             lipgloss.Color("#a3be8c"),
+		Selection:           lipgloss.Color("#4c566a"),
+		SelectionForeground: lipgloss.Color("#eceff4"),
+		Link:                lipgloss.Color("#81a1c1"),
+		SearchMatch:         lipgloss.Color("#ebcb8b"),
+	},
+	"solarized-dark": {
+		Foreground:          lipgloss.Color("#839496"),
+		Background:          lipgloss.Color("#002b36"),
+		Accent:              lipgloss.Color("#b58900"),
+		Muted:               lipgloss.Color("#586e75"),
+		Danger:              lipgloss.Color("#dc322f"),
+		Success:             lipgloss.Color("#859900"),
+		Selection:           lipgloss.Color("#073642"),
+		SelectionForeground: lipgloss.Color("#eee8d5"),
+		Link:                lipgloss.Color("#268bd2"),
+		SearchMatch:         lipgloss.Color("#b58900"),
+	},
+	"solarized-light": {
+		Foreground:          lipgloss.Color("#657b83"),
+		Background:          lipgloss.Color("#fdf6e3"),
+		Accent:              lipgloss.Color("#b58900"),
+		Muted:               lipgloss.Color("#93a1a1"),
+		Danger:              lipgloss.Color("#dc322f"),
+		Success:             lipgloss.Color("#859900"),
+		Selection:           lipgloss.Color("#eee8d5"),
+		SelectionForeground: lipgloss.Color("#586e75"),
+		Link:                lipgloss.Color("#268bd2"),
+		SearchMatch:         lipgloss.Color("#b58900"),
+	},
+}
+
+// SchemeNames returns the canonical built-in scheme names in sorted order.
+func SchemeNames() []string {
+	names := make([]string, 0, len(schemes))
+	for name := range schemes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ResolveScheme resolves a scheme name after normalizing whitespace and case.
+func ResolveScheme(name string) (Styles, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		name = DefaultScheme
+	}
+	scheme, ok := schemes[name]
+	if !ok {
+		return Styles{}, fmt.Errorf("unknown color scheme %q (valid schemes: %s)", name, strings.Join(SchemeNames(), ", "))
+	}
+	return stylesFor(name, scheme), nil
+}
+
+func stylesFor(name string, scheme Scheme) Styles {
+	base := lipgloss.NewStyle()
+	if scheme.Foreground != nil {
+		base = base.Foreground(scheme.Foreground)
+	}
+	if scheme.Background != nil {
+		base = base.Background(scheme.Background)
+	}
+	return Styles{
+		Name:        name,
+		Scheme:      scheme,
+		Base:        base,
+		Selected:    lipgloss.NewStyle().Foreground(scheme.SelectionForeground).Background(scheme.Selection).Bold(true),
+		Dim:         lipgloss.NewStyle().Foreground(scheme.Muted),
+		Danger:      lipgloss.NewStyle().Foreground(scheme.Danger),
+		Success:     lipgloss.NewStyle().Foreground(scheme.Success),
+		Link:        lipgloss.NewStyle().Foreground(scheme.Link).Underline(true),
+		SearchMatch: lipgloss.NewStyle().Foreground(scheme.SearchMatch).Underline(true),
+	}
+}
+
+func (s Styles) Pane(title string, active bool, width, height int, content string) string {
+	color := s.Scheme.Muted
 	if active {
-		color = Accent
+		color = s.Scheme.Accent
 	}
 	border := lipgloss.RoundedBorder()
 	border.Top = "─"

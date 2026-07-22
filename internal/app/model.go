@@ -72,6 +72,7 @@ type Model struct {
 	refresher  Refresher
 	browser    Browser
 	tuiBrowser TUIBrowser
+	styles     ui.Styles
 
 	feeds   []domain.Feed
 	entries []domain.Entry
@@ -128,23 +129,45 @@ type exportMsg struct {
 	err  error
 }
 
-func New(store Store, refresher Refresher, browser Browser) Model {
-	return newModel(store, refresher, browser, nil)
+func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles) Model {
+	return newModel(store, refresher, browser, nil, modelStyles(styles))
 }
 
 // NewWithTUIBrowser configures an interactive browser that temporarily takes
 // over the terminal and returns control to the feed reader when it exits.
-func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser) Model {
-	return newModel(store, refresher, nil, browser)
+func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser, styles ...ui.Styles) Model {
+	return newModel(store, refresher, nil, browser, modelStyles(styles))
 }
 
-func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIBrowser) Model {
+func modelStyles(configured []ui.Styles) ui.Styles {
+	if len(configured) > 0 {
+		return configured[0]
+	}
+	styles, err := ui.ResolveScheme(ui.DefaultScheme)
+	if err != nil {
+		panic(err)
+	}
+	return styles
+}
+
+func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIBrowser, styles ui.Styles) Model {
 	input := textinput.New()
 	input.SetWidth(60)
+	inputStyles := input.Styles()
+	inputStyles.Focused.Text = styles.Base
+	inputStyles.Focused.Placeholder = styles.Dim
+	inputStyles.Focused.Suggestion = styles.Dim
+	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(styles.Scheme.Accent)
+	inputStyles.Blurred.Text = styles.Dim
+	inputStyles.Blurred.Placeholder = styles.Dim
+	inputStyles.Blurred.Suggestion = styles.Dim
+	inputStyles.Blurred.Prompt = styles.Dim
+	inputStyles.Cursor.Color = styles.Scheme.Accent
+	input.SetStyles(inputStyles)
 	reader := viewport.New()
 	model := Model{
 		store: store, refresher: refresher, browser: browser, tuiBrowser: tuiBrowser,
-		input: input, reader: reader, width: 100, height: 30,
+		styles: styles, input: input, reader: reader, width: 100, height: 30,
 		readerLinkCursor:  -1,
 		readerMatchCursor: -1,
 		active:            feedsPane, status: "Loading subscriptions…",
@@ -728,7 +751,7 @@ func (m *Model) syncReader() {
 }
 
 func (m *Model) setReaderContent(entry domain.Entry) {
-	m.readerLinks = render.Links(entry.HTML, entry.URL)
+	_, m.readerLinks = render.TextWithLinks(entry.HTML, entry.URL, nil)
 	m.readerLinkCursor = -1
 	m.renderReaderContent(entry)
 }
@@ -744,29 +767,24 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 		content = "This feed did not include article content. Press o to open the original."
 	}
 	if len(m.readerLinks) > 0 {
-		var links strings.Builder
-		links.WriteString("\n\n")
-		links.WriteString(ui.Selected.Render("Links"))
-		for index, link := range m.readerLinks {
-			line := fmt.Sprintf("[%d] %s", index+1, link.Text)
-			style := lipgloss.NewStyle().Foreground(ui.Accent).Underline(true).Hyperlink(link.URL)
+		linkedContent, _ := render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
+			linkID := fmt.Sprintf("id=rxs-link-%d", index)
+			style := m.styles.Link.Hyperlink(link.URL, linkID)
 			if index == m.readerLinkCursor {
-				style = ui.Selected.Hyperlink(link.URL)
+				style = m.styles.Selected.Hyperlink(link.URL, linkID)
 			}
-			links.WriteByte('\n')
-			links.WriteString(style.Render(line))
-			links.WriteString(ui.Dim.Render("\n    " + link.URL))
-		}
-		content += links.String()
+			return style.Render(text)
+		})
+		content = linkedContent
 	}
-	article := ui.Selected.Render(entry.Title) + "\n" + ui.Dim.Render(meta) + "\n\n" + content
+	article := m.styles.Selected.Render(entry.Title) + "\n" + m.styles.Dim.Render(meta) + "\n\n" + content
 	wrapped := lipgloss.Wrap(article, m.readerTextWidth(), " ")
 	m.readerMatches = findReaderMatches(wrapped, m.readerSearch)
 	if len(m.readerMatches) == 0 {
 		m.readerMatchCursor = -1
 	} else {
 		m.readerMatchCursor = clamp(m.readerMatchCursor, 0, len(m.readerMatches)-1)
-		wrapped = highlightReaderMatches(wrapped, m.readerMatches, m.readerMatchCursor)
+		wrapped = m.highlightReaderMatches(wrapped, m.readerMatches, m.readerMatchCursor)
 	}
 	m.reader.SetContent(wrapped)
 }
@@ -832,13 +850,13 @@ func findReaderMatches(content, query string) []readerMatch {
 	return matches
 }
 
-func highlightReaderMatches(content string, matches []readerMatch, selected int) string {
+func (m Model) highlightReaderMatches(content string, matches []readerMatch, selected int) string {
 	lines := strings.Split(content, "\n")
 	byLine := make(map[int][]lipgloss.Range)
 	for index, match := range matches {
-		style := lipgloss.NewStyle().Foreground(ui.Accent).Underline(true)
+		style := m.styles.SearchMatch
 		if index == selected {
-			style = ui.Selected
+			style = m.styles.Selected
 		}
 		byLine[match.line] = append(byLine[match.line], lipgloss.NewRange(match.start, match.end, style))
 	}
@@ -864,6 +882,20 @@ func (m *Model) selectReaderLink(delta int) {
 	link := m.readerLinks[m.readerLinkCursor]
 	m.status, m.errStatus = fmt.Sprintf("Link %d/%d: %s", m.readerLinkCursor+1, len(m.readerLinks), link.Text), false
 	m.renderReaderContent(m.currentReaderEntry())
+	m.ensureReaderLinkVisible(m.readerLinkCursor, link)
+}
+
+func (m *Model) ensureReaderLinkVisible(index int, link render.Link) {
+	marker := ansi.SetHyperlink(link.URL, fmt.Sprintf("id=rxs-link-%d", index))
+	for lineNumber, line := range strings.Split(m.reader.GetContent(), "\n") {
+		markerAt := strings.Index(line, marker)
+		if markerAt < 0 {
+			continue
+		}
+		start := lipgloss.Width(ansi.Strip(line[:markerAt]))
+		m.reader.EnsureVisible(lineNumber, start, start+1)
+		return
+	}
 }
 
 func (m Model) currentReaderEntry() domain.Entry {
@@ -909,7 +941,7 @@ func (m Model) readerTextWidth() int {
 
 func (m Model) View() tea.View {
 	if m.overlay != noOverlay {
-		view := tea.NewView(m.overlayView())
+		view := m.newView(m.overlayView())
 		view.AltScreen = true
 		return view
 	}
@@ -917,34 +949,34 @@ func (m Model) View() tea.View {
 	var body string
 	switch {
 	case m.active == readerPane:
-		body = ui.Pane("Reader", true, m.width, bodyHeight, m.reader.View())
+		body = m.styles.Pane("Reader", true, m.width, bodyHeight, m.reader.View())
 	case m.width >= 110:
 		fw := m.width / 4
 		aw := m.width / 3
 		rw := m.width - fw - aw
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			ui.Pane("Feeds", m.active == feedsPane, fw, bodyHeight, m.feedsView(fw-4)),
-			ui.Pane("Articles", m.active == articlesPane, aw, bodyHeight, m.entriesView(aw-4)),
-			ui.Pane("Reader", m.active == readerPane, rw, bodyHeight, m.reader.View()))
+			m.styles.Pane("Feeds", m.active == feedsPane, fw, bodyHeight, m.feedsView(fw-4)),
+			m.styles.Pane("Articles", m.active == articlesPane, aw, bodyHeight, m.entriesView(aw-4)),
+			m.styles.Pane("Reader", m.active == readerPane, rw, bodyHeight, m.reader.View()))
 	case m.width >= 70:
 		left := m.width / 2
 		right := m.width - left
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			ui.Pane("Feeds", m.active == feedsPane, left, bodyHeight, m.feedsView(left-4)),
-			ui.Pane("Articles", m.active == articlesPane, right, bodyHeight, m.entriesView(right-4)))
+			m.styles.Pane("Feeds", m.active == feedsPane, left, bodyHeight, m.feedsView(left-4)),
+			m.styles.Pane("Articles", m.active == articlesPane, right, bodyHeight, m.entriesView(right-4)))
 	default:
 		switch m.active {
 		case feedsPane:
-			body = ui.Pane("Feeds", true, m.width, bodyHeight, m.feedsView(m.width-4))
+			body = m.styles.Pane("Feeds", true, m.width, bodyHeight, m.feedsView(m.width-4))
 		case articlesPane:
-			body = ui.Pane("Articles", true, m.width, bodyHeight, m.entriesView(m.width-4))
+			body = m.styles.Pane("Articles", true, m.width, bodyHeight, m.entriesView(m.width-4))
 		case readerPane:
-			body = ui.Pane("Reader", true, m.width, bodyHeight, m.reader.View())
+			body = m.styles.Pane("Reader", true, m.width, bodyHeight, m.reader.View())
 		}
 	}
-	statusStyle := ui.Dim
+	statusStyle := m.styles.Dim
 	if m.errStatus {
-		statusStyle = lipgloss.NewStyle().Foreground(ui.Danger)
+		statusStyle = m.styles.Danger
 	}
 	statusText := m.status
 	if m.busy {
@@ -955,9 +987,16 @@ func (m Model) View() tea.View {
 	if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · ? help"
 	}
-	keys := ui.Dim.Render(truncate(keyText, max(1, m.width-2)))
-	view := tea.NewView(body + "\n" + status + "\n" + keys)
+	keys := m.styles.Dim.Render(truncate(keyText, max(1, m.width-2)))
+	view := m.newView(body + "\n" + status + "\n" + keys)
 	view.AltScreen = true
+	return view
+}
+
+func (m Model) newView(content string) tea.View {
+	view := tea.NewView(content)
+	view.ForegroundColor = m.styles.Scheme.Foreground
+	view.BackgroundColor = m.styles.Scheme.Background
 	return view
 }
 
@@ -971,14 +1010,14 @@ func (m Model) feedsView(width int) string {
 	for i, source := range m.feeds {
 		line := m.menuLine(i+2, source.Title, source.UnreadCount, width)
 		if source.LastError != "" {
-			line += ui.Dim.Render(" !")
-			lines = append(lines, line, lipgloss.NewStyle().Foreground(ui.Danger).Render("  "+truncate(source.LastError, max(1, width-2))))
+			line += m.styles.Dim.Render(" !")
+			lines = append(lines, line, m.styles.Danger.Render("  "+truncate(source.LastError, max(1, width-2))))
 			continue
 		}
 		lines = append(lines, line)
 	}
 	if len(m.feeds) == 0 {
-		lines = append(lines, ui.Dim.Render("Press a to add a feed."))
+		lines = append(lines, m.styles.Dim.Render("Press a to add a feed."))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -990,14 +1029,14 @@ func (m Model) menuLine(index int, label string, count, width int) string {
 	}
 	line := truncate(label, max(1, width-utf8.RuneCountInString(countText))) + countText
 	if m.active == feedsPane && m.feedCursor == index {
-		return ui.Selected.Width(max(1, width)).Render(line)
+		return m.styles.Selected.Width(max(1, width)).Render(line)
 	}
 	return line
 }
 
 func (m Model) entriesView(width int) string {
 	if len(m.entries) == 0 {
-		return ui.Dim.Render("No matching articles.")
+		return m.styles.Dim.Render("No matching articles.")
 	}
 	lines := make([]string, 0, len(m.entries)*2)
 	for i, entry := range m.entries {
@@ -1011,9 +1050,9 @@ func (m Model) entriesView(width int) string {
 		}
 		line := truncate(marker+entry.Title, max(1, width-utf8.RuneCountInString(star))) + star
 		if m.active == articlesPane && i == m.entryCursor {
-			line = ui.Selected.Width(max(1, width)).Render(line)
+			line = m.styles.Selected.Width(max(1, width)).Render(line)
 		}
-		lines = append(lines, line, ui.Dim.Render("  "+truncate(entry.FeedTitle+" · "+relativeTime(entry.PublishedAt), max(1, width-2))))
+		lines = append(lines, line, m.styles.Dim.Render("  "+truncate(entry.FeedTitle+" · "+relativeTime(entry.PublishedAt), max(1, width-2))))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1033,8 +1072,8 @@ func (m Model) overlayView() string {
 		title = "Input"
 		content = m.input.View() + "\n\nEnter to confirm · Esc to cancel"
 	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(ui.Accent).
-		Padding(1, 2).Width(max(20, min(76, m.width-6))).Render(ui.Selected.Render(title) + "\n\n" + content)
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.styles.Scheme.Accent).
+		Padding(1, 2).Width(max(20, min(76, m.width-6))).Render(m.styles.Selected.Render(title) + "\n\n" + content)
 	return lipgloss.Place(max(1, m.width), max(1, m.height), lipgloss.Center, lipgloss.Center, box)
 }
 
