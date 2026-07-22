@@ -104,17 +104,16 @@ func OpenBrowser(rawURL string) error {
 	if err := validateBrowserURL(rawURL); err != nil {
 		return err
 	}
-	var command string
-	var args []string
+	var command *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		command, args = "open", []string{rawURL}
+		command = exec.Command("open", rawURL) // #nosec G204 -- rawURL is a validated HTTP(S) URL passed without a shell.
 	case "windows":
-		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", rawURL}
+		command = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL) // #nosec G204 -- rawURL is a validated HTTP(S) URL passed without a shell.
 	default:
-		command, args = "xdg-open", []string{rawURL}
+		command = exec.Command("xdg-open", rawURL) // #nosec G204 -- rawURL is a validated HTTP(S) URL passed without a shell.
 	}
-	if err := exec.Command(command, args...).Start(); err != nil {
+	if err := command.Start(); err != nil {
 		return fmt.Errorf("open browser: %w", err)
 	}
 	return nil
@@ -140,7 +139,9 @@ func BrowserCommand(config BrowserConfig, rawURL string) (*exec.Cmd, error) {
 	if !foundPlaceholder {
 		args = append(args, rawURL)
 	}
-	return exec.Command(config.Command, args...), nil
+	// The executable and arguments are explicitly supplied in the user's local
+	// configuration. exec.Command executes them directly without a shell.
+	return exec.Command(config.Command, args...), nil // #nosec G204
 }
 
 func validateBrowserURL(rawURL string) error {

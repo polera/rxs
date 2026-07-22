@@ -35,6 +35,8 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | --- | --- |
 | `j` / `k`, arrows | Move in the active pane; scroll by line in the reader |
 | `h` / `l` | Change pane |
+| `ctrl+f` / `ctrl+b` | Page down / up in the reader |
+| `ctrl+d` / `ctrl+u` | Half page down / up in the reader |
 | `gg` / `G` | Go to the beginning / end of the article |
 | `/`, then `n` / `N` | Find in the open article; select the next / previous match |
 | Tab / Shift-Tab | Change pane, or select the next / previous link in the reader |

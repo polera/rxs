@@ -52,6 +52,10 @@ func key(value rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: value, Text: string(value)})
 }
 
+func ctrlKey(value rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: value, Mod: tea.ModCtrl})
+}
+
 func update(t *testing.T, model Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	next, cmd := model.Update(msg)
@@ -189,6 +193,41 @@ func TestReaderReflowsAndLimitsWideLines(t *testing.T) {
 		if width := lipgloss.Width(line); width > 42 {
 			t.Fatalf("resized reader line width = %d, want <= 42: %q", width, line)
 		}
+	}
+}
+
+func TestReaderPagesWithVimControlKeys(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.entries[0].Text = strings.Repeat("readable prose ", 400)
+	model.active = readerPane
+	model, _ = update(t, model, tea.WindowSizeMsg{Width: 80, Height: 24})
+	model.setReaderContent(model.entries[0])
+	model.reader.GotoTop()
+
+	page := model.reader.Height()
+	model, _ = update(t, model, ctrlKey('f'))
+	if got := model.reader.YOffset(); got != page {
+		t.Fatalf("ctrl+f offset = %d, want %d", got, page)
+	}
+	model, _ = update(t, model, ctrlKey('d'))
+	if got := model.reader.YOffset(); got != page+page/2 {
+		t.Fatalf("ctrl+d offset = %d, want %d", got, page+page/2)
+	}
+	model, _ = update(t, model, ctrlKey('u'))
+	if got := model.reader.YOffset(); got != page {
+		t.Fatalf("ctrl+u offset = %d, want %d", got, page)
+	}
+	model, _ = update(t, model, ctrlKey('b'))
+	if got := model.reader.YOffset(); got != 0 {
+		t.Fatalf("ctrl+b offset = %d, want 0", got)
+	}
+}
+
+func TestPagingKeysDoNothingOutsideReader(t *testing.T) {
+	model, _ := loadedModel(t)
+	model, _ = update(t, model, ctrlKey('f'))
+	if model.active != feedsPane || model.feedCursor != 0 {
+		t.Fatalf("ctrl+f outside the reader moved to pane %d, cursor %d", model.active, model.feedCursor)
 	}
 }
 

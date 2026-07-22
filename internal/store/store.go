@@ -46,12 +46,10 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("connect to database: %w", err)
+		return nil, closeAfterError(db, fmt.Errorf("connect to database: %w", err))
 	}
 	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
-		return nil, err
+		return nil, closeAfterError(db, err)
 	}
 	return s, nil
 }
@@ -97,8 +95,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", version)
 		}
 		if err != nil {
-			tx.Rollback()
-			return fmt.Errorf("apply migration %d: %w", version, err)
+			applyErr := fmt.Errorf("apply migration %d: %w", version, err)
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				return errors.Join(applyErr, fmt.Errorf("rollback migration %d: %w", version, rollbackErr))
+			}
+			return applyErr
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %d: %w", version, err)
@@ -317,17 +318,18 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 }
 
 func (s *Store) SetRead(ctx context.Context, id int64, read bool) error {
-	return s.setState(ctx, id, "is_read", read)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_state(entry_id, is_read)
+ VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET is_read=excluded.is_read`, id, read)
+	return stateUpdateResult(result, err)
 }
 
 func (s *Store) SetStarred(ctx context.Context, id int64, starred bool) error {
-	return s.setState(ctx, id, "is_starred", starred)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_state(entry_id, is_starred)
+ VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET is_starred=excluded.is_starred`, id, starred)
+	return stateUpdateResult(result, err)
 }
 
-func (s *Store) setState(ctx context.Context, id int64, column string, value bool) error {
-	// column is internal and deliberately not caller-controlled.
-	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_state(entry_id, `+column+`)
- VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET `+column+`=excluded.`+column, id, value)
+func stateUpdateResult(result sql.Result, err error) error {
 	if err != nil {
 		return fmt.Errorf("update entry state: %w", err)
 	}
@@ -335,6 +337,13 @@ func (s *Store) setState(ctx context.Context, id int64, column string, value boo
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func closeAfterError(db *sql.DB, err error) error {
+	if closeErr := db.Close(); closeErr != nil {
+		return errors.Join(err, fmt.Errorf("close database: %w", closeErr))
+	}
+	return err
 }
 
 func escapeLike(s string) string {

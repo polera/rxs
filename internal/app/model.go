@@ -281,6 +281,18 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.reader.GotoBottom()
 			m.status, m.errStatus = "End of article", false
 			return m, nil
+		case "ctrl+f":
+			m.reader.PageDown()
+			return m, nil
+		case "ctrl+b":
+			m.reader.PageUp()
+			return m, nil
+		case "ctrl+d":
+			m.reader.HalfPageDown()
+			return m, nil
+		case "ctrl+u":
+			m.reader.HalfPageUp()
+			return m, nil
 		case "n":
 			m.selectReaderMatch(1)
 			return m, nil
@@ -941,7 +953,7 @@ func (m Model) View() tea.View {
 	status := statusStyle.Render(truncate(statusText, max(1, m.width-2)))
 	keyText := "j/k move · h/l pane · enter read · r refresh · / search · ? help"
 	if m.active == readerPane {
-		keyText = "j/k scroll · gg/G start/end · / find · n/N matches · h articles · ? help"
+		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · ? help"
 	}
 	keys := ui.Dim.Render(truncate(keyText, max(1, m.width-2)))
 	view := tea.NewView(body + "\n" + status + "\n" + keys)
@@ -1011,7 +1023,7 @@ func (m Model) overlayView() string {
 	switch m.overlay {
 	case helpOverlay:
 		title = "Help"
-		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of article\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nq or esc        close / quit"
+		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of article\nctrl+f / ctrl+b page down / up in reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nq or esc        close / quit"
 	case deleteOverlay:
 		title = "Remove feed?"
 		if m.feedCursor >= 2 && m.feedCursor-2 < len(m.feeds) {
