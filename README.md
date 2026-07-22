@@ -2,6 +2,16 @@
 
 `rxs` is a local-first, keyboard-driven RSS, Atom, and JSON Feed reader for the terminal. It stores downloaded articles in SQLite, starts without an account, and remains useful offline.
 
+## Screenshots
+
+Browse feeds, articles, and a reading preview side by side:
+
+![Browsing feeds and articles in rxs](assets/rxs-browse.png)
+
+Open an article in the focused reader:
+
+![Reading an article in rxs](assets/rxs-reader.png)
+
 ## Install
 
 Go 1.26 or newer is required when building from source.

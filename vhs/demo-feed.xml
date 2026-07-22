@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Local-First Dispatch</title>
+    <link>https://example.com/local-first</link>
+    <description>Notes on calm, durable software.</description>
+    <item>
+      <guid isPermaLink="false">calmer-web</guid>
+      <title>A calmer way to read the web</title>
+      <link>https://example.com/local-first/calm-reading</link>
+      <author>mara@example.com (Mara Bell)</author>
+      <pubDate>Tue, 21 Jul 2026 12:00:00 GMT</pubDate>
+      <description><![CDATA[
+        <p>The web is still at its best when it feels like a library: quiet, durable, and yours to explore.</p>
+
+        <h2>Keep the useful parts close</h2>
+        <p>rxs saves downloaded articles in a local SQLite database, so a train tunnel or flaky connection never interrupts your reading list.</p>
+
+        <ul>
+          <li>Move quickly with familiar keyboard shortcuts.</li>
+          <li>Search titles and downloaded article text.</li>
+          <li>Star useful stories and return to them later.</li>
+        </ul>
+
+        <p>Feeds stay simple, portable, and available offline. <a href="https://example.com/local-first">Read more about local-first software</a>.</p>
+      ]]></description>
+    </item>
+  </channel>
+</rss>
