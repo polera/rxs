@@ -91,7 +91,7 @@ type Model struct {
 	readerSearch      string
 	readerMatches     []readerMatch
 	readerMatchCursor int
-	readerPendingG    bool
+	pendingG          bool
 	active            pane
 	overlay           overlay
 	schemeNames       []string
@@ -299,20 +299,26 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
-	if m.active == readerPane {
-		if m.readerPendingG {
-			m.readerPendingG = false
-			if key == "g" {
+	if m.pendingG {
+		m.pendingG = false
+		if key == "g" {
+			if m.active == readerPane {
 				m.reader.GotoTop()
 				m.status, m.errStatus = "Beginning of article", false
 				return m, nil
 			}
+			if m.moveToListBoundary(false) {
+				return m, m.loadCmd()
+			}
+			return m, nil
 		}
+	}
+	if m.active == readerPane {
 		switch key {
 		case "/":
 			return m.openInput(readerSearchOverlay, "Find in article", "search text")
 		case "g":
-			m.readerPendingG = true
+			m.pendingG = true
 			return m, nil
 		case "G":
 			m.reader.GotoBottom()
@@ -390,6 +396,14 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.active == readerPane && m.readerLinkCursor >= 0 {
 			m.readerLinkCursor = -1
 			m.renderReaderContent(m.currentReaderEntry())
+		}
+		return m, nil
+	case "g":
+		m.pendingG = true
+		return m, nil
+	case "G":
+		if m.moveToListBoundary(true) {
+			return m, m.loadCmd()
 		}
 		return m, nil
 	case "j", "down":
@@ -588,6 +602,13 @@ func (m *Model) applyStyles(styles ui.Styles) {
 func (m *Model) openInput(mode overlay, prompt, placeholder string) (tea.Model, tea.Cmd) {
 	m.overlay = mode
 	m.input.Reset()
+	switch mode {
+	case searchOverlay:
+		m.input.SetValue(m.filter.Search)
+	case readerSearchOverlay:
+		m.input.SetValue(m.readerSearch)
+	}
+	m.input.CursorEnd()
 	m.input.Prompt = prompt + ": "
 	m.input.Placeholder = placeholder
 	m.input.SetWidth(max(20, min(70, m.width-10)))
@@ -622,6 +643,35 @@ func (m *Model) move(delta int) {
 	}
 }
 
+// moveToListBoundary moves to the first or last row of the active list. It
+// reports whether the feed selection changed and articles must be reloaded.
+func (m *Model) moveToListBoundary(end bool) bool {
+	switch m.active {
+	case feedsPane:
+		target := 0
+		if end {
+			target = len(m.feeds) + 1
+		}
+		if m.feedCursor == target {
+			return false
+		}
+		m.feedCursor = target
+		m.entryCursor = 0
+		m.applyFeedFilter()
+		m.status = "Loading articles…"
+		return true
+	case articlesPane:
+		target := 0
+		if end {
+			target = max(0, len(m.entries)-1)
+		}
+		m.entryCursor = target
+		m.readerEntry = nil
+		m.syncReader()
+	}
+	return false
+}
+
 func (m *Model) applyFeedFilter() {
 	m.filter.FeedID = 0
 	m.filter.StarredOnly = false
@@ -651,7 +701,7 @@ func (m Model) openSelected() (tea.Model, tea.Cmd) {
 	m.readerSearch = ""
 	m.readerMatches = nil
 	m.readerMatchCursor = -1
-	m.readerPendingG = false
+	m.pendingG = false
 	m.setReaderContent(opened)
 	m.reader.GotoTop()
 	if !entry.Read {
@@ -1073,7 +1123,7 @@ func (m Model) View() tea.View {
 		statusText = "◌ " + statusText
 	}
 	status := statusStyle.Render(truncate(statusText, max(1, m.width-2)))
-	keyText := "j/k move · h/l pane · enter read · r refresh · / search · c colors · ? help"
+	keyText := "j/k move · gg/G start/end · h/l pane · enter read · r refresh · / search · c colors · ? help"
 	if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · c colors · ? help"
 	}
@@ -1092,12 +1142,16 @@ func (m Model) newView(content string) tea.View {
 
 func (m Model) feedsView(width int) string {
 	var lines []string
+	selectedLine := min(m.feedCursor, 1)
 	total := 0
 	for _, source := range m.feeds {
 		total += source.UnreadCount
 	}
 	lines = append(lines, m.menuLine(0, "All", total, width), m.menuLine(1, "Starred", -1, width), "")
 	for i, source := range m.feeds {
+		if m.feedCursor == i+2 {
+			selectedLine = len(lines)
+		}
 		line := m.menuLine(i+2, source.Title, source.UnreadCount, width)
 		if source.LastError != "" {
 			line += m.styles.Dim.Render(" !")
@@ -1109,7 +1163,7 @@ func (m Model) feedsView(width int) string {
 	if len(m.feeds) == 0 {
 		lines = append(lines, m.styles.Dim.Render("Press a to add a feed."))
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(visibleListLines(lines, selectedLine, m.listViewHeight()), "\n")
 }
 
 func (m Model) menuLine(index int, label string, count, width int) string {
@@ -1129,7 +1183,11 @@ func (m Model) entriesView(width int) string {
 		return m.styles.Dim.Render("No matching articles.")
 	}
 	lines := make([]string, 0, len(m.entries)*2)
+	selectedLine := 0
 	for i, entry := range m.entries {
+		if i == m.entryCursor {
+			selectedLine = len(lines)
+		}
 		marker := "  "
 		if !entry.Read {
 			marker = "● "
@@ -1144,7 +1202,25 @@ func (m Model) entriesView(width int) string {
 		}
 		lines = append(lines, line, m.styles.Dim.Render("  "+truncate(entry.FeedTitle+" · "+relativeTime(entry.PublishedAt), max(1, width-2))))
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(visibleListLines(lines, selectedLine, m.listViewHeight()), "\n")
+}
+
+// listViewHeight is the pane's inner height after its border and title line.
+func (m Model) listViewHeight() int {
+	return max(1, m.height-5)
+}
+
+// visibleListLines keeps the selected row and its detail line in view. Both
+// feed errors and article metadata occupy the line immediately after a row.
+func visibleListLines(lines []string, selectedLine, height int) []string {
+	if len(lines) <= height {
+		return lines
+	}
+	height = max(1, height)
+	selectedEnd := min(selectedLine+1, len(lines)-1)
+	start := clamp(selectedEnd-height+1, 0, len(lines)-height)
+	start = min(start, selectedLine)
+	return lines[start : start+height]
 }
 
 func (m Model) overlayView() string {
@@ -1152,7 +1228,7 @@ func (m Model) overlayView() string {
 	switch m.overlay {
 	case helpOverlay:
 		title = "Help"
-		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of article\nctrl+f / ctrl+b page down / up in reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq or esc        close / quit"
+		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of list or article\nctrl+f / ctrl+b page down / up in reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq or esc        close / quit"
 	case colorSchemeOverlay:
 		title = "Color scheme"
 		lines := make([]string, 0, len(m.schemeNames))

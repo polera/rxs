@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -240,6 +241,83 @@ func TestResponsivePaneVisibility(t *testing.T) {
 	}
 }
 
+func TestFeedListScrollsToKeepSelectionVisible(t *testing.T) {
+	store := &fakeStore{}
+	for i := 0; i < 12; i++ {
+		store.feeds = append(store.feeds, domain.Feed{ID: int64(i + 1), Title: fmt.Sprintf("Feed %02d", i)})
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds})
+	model, _ = update(t, model, tea.WindowSizeMsg{Width: 50, Height: 10})
+
+	for range len(store.feeds) + 1 {
+		model, _ = update(t, model, key('j'))
+	}
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "Feed 11") {
+		t.Fatalf("selected feed was clipped after navigating down: %q", view)
+	}
+	if strings.Contains(view, "All 0") {
+		t.Fatalf("feed list did not scroll away from its first row: %q", view)
+	}
+}
+
+func TestArticleListScrollsToKeepSelectionVisible(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.entries = nil
+	for i := 0; i < 12; i++ {
+		model.entries = append(model.entries, domain.Entry{Title: fmt.Sprintf("Article %02d", i), FeedTitle: "Feed"})
+	}
+	model.active = articlesPane
+	model.entryCursor = len(model.entries) - 1
+	model, _ = update(t, model, tea.WindowSizeMsg{Width: 80, Height: 10})
+
+	view := ansi.Strip(model.View().Content)
+	if !strings.Contains(view, "Article 11") {
+		t.Fatalf("selected article was clipped after navigating down: %q", view)
+	}
+	if strings.Contains(view, "Article 00") {
+		t.Fatalf("article list did not scroll away from its first row: %q", view)
+	}
+}
+
+func TestListVimNavigation(t *testing.T) {
+	store := &fakeStore{
+		feeds: []domain.Feed{
+			{ID: 1, Title: "First"},
+			{ID: 2, Title: "Last"},
+		},
+		entries: []domain.Entry{
+			{ID: 10, Title: "First article"},
+			{ID: 11, Title: "Last article"},
+		},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
+
+	var cmd tea.Cmd
+	model, cmd = update(t, model, key('G'))
+	if model.feedCursor != len(store.feeds)+1 || model.filter.FeedID != store.feeds[1].ID || cmd == nil {
+		t.Fatalf("feed G: cursor=%d filter=%+v cmd=%v", model.feedCursor, model.filter, cmd)
+	}
+	model, _ = update(t, model, key('g'))
+	model, cmd = update(t, model, key('g'))
+	if model.feedCursor != 0 || model.filter.FeedID != 0 || cmd == nil {
+		t.Fatalf("feed gg: cursor=%d filter=%+v cmd=%v", model.feedCursor, model.filter, cmd)
+	}
+
+	model.active = articlesPane
+	model, _ = update(t, model, key('G'))
+	if model.entryCursor != len(store.entries)-1 {
+		t.Fatalf("article G cursor=%d, want %d", model.entryCursor, len(store.entries)-1)
+	}
+	model, _ = update(t, model, key('g'))
+	model, _ = update(t, model, key('g'))
+	if model.entryCursor != 0 {
+		t.Fatalf("article gg cursor=%d, want 0", model.entryCursor)
+	}
+}
+
 func TestReaderFocusExpandsAndBrowsingRestoresWideLayout(t *testing.T) {
 	model, _ := loadedModel(t)
 	model, _ = update(t, model, tea.WindowSizeMsg{Width: 120, Height: 30})
@@ -352,6 +430,21 @@ func TestQCanBeTypedInInput(t *testing.T) {
 	model, _ = update(t, model, key('q'))
 	if model.overlay != addOverlay || model.input.Value() != "q" {
 		t.Fatalf("q should remain in input: overlay=%v value=%q", model.overlay, model.input.Value())
+	}
+}
+
+func TestSearchInputPreservesCurrentTerms(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.filter.Search = "current terms"
+
+	model, _ = update(t, model, key('/'))
+	if model.overlay != searchOverlay || model.input.Value() != "current terms" {
+		t.Fatalf("search opened with overlay=%v value=%q", model.overlay, model.input.Value())
+	}
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	model, _ = update(t, model, key('/'))
+	if model.input.Value() != "current terms" {
+		t.Fatalf("reopened search value=%q, want current terms", model.input.Value())
 	}
 }
 
