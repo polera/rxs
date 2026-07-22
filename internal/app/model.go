@@ -65,7 +65,11 @@ const (
 	importOverlay
 	exportOverlay
 	helpOverlay
+	colorSchemeOverlay
 )
+
+// ColorSchemeSaver persists the canonical name of a selected color scheme.
+type ColorSchemeSaver func(string) error
 
 type Model struct {
 	store      Store
@@ -73,6 +77,7 @@ type Model struct {
 	browser    Browser
 	tuiBrowser TUIBrowser
 	styles     ui.Styles
+	saveScheme ColorSchemeSaver
 
 	feeds   []domain.Feed
 	entries []domain.Entry
@@ -89,6 +94,9 @@ type Model struct {
 	readerPendingG    bool
 	active            pane
 	overlay           overlay
+	schemeNames       []string
+	schemeCursor      int
+	schemeOriginal    ui.Styles
 	input             textinput.Model
 	reader            viewport.Model
 
@@ -128,6 +136,10 @@ type exportMsg struct {
 	path string
 	err  error
 }
+type colorSchemeSavedMsg struct {
+	name string
+	err  error
+}
 
 func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles) Model {
 	return newModel(store, refresher, browser, nil, modelStyles(styles))
@@ -137,6 +149,11 @@ func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles)
 // over the terminal and returns control to the feed reader when it exits.
 func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser, styles ...ui.Styles) Model {
 	return newModel(store, refresher, nil, browser, modelStyles(styles))
+}
+
+// SetColorSchemeSaver enables persistent color-scheme selection in the UI.
+func (m *Model) SetColorSchemeSaver(saver ColorSchemeSaver) {
+	m.saveScheme = saver
 }
 
 func modelStyles(configured []ui.Styles) ui.Styles {
@@ -153,17 +170,6 @@ func modelStyles(configured []ui.Styles) ui.Styles {
 func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIBrowser, styles ui.Styles) Model {
 	input := textinput.New()
 	input.SetWidth(60)
-	inputStyles := input.Styles()
-	inputStyles.Focused.Text = styles.Base
-	inputStyles.Focused.Placeholder = styles.Dim
-	inputStyles.Focused.Suggestion = styles.Dim
-	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(styles.Scheme.Accent)
-	inputStyles.Blurred.Text = styles.Dim
-	inputStyles.Blurred.Placeholder = styles.Dim
-	inputStyles.Blurred.Suggestion = styles.Dim
-	inputStyles.Blurred.Prompt = styles.Dim
-	inputStyles.Cursor.Color = styles.Scheme.Accent
-	input.SetStyles(inputStyles)
 	reader := viewport.New()
 	model := Model{
 		store: store, refresher: refresher, browser: browser, tuiBrowser: tuiBrowser,
@@ -172,6 +178,7 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 		readerMatchCursor: -1,
 		active:            feedsPane, status: "Loading subscriptions…",
 	}
+	model.applyStyles(styles)
 	model.resizeReader()
 	return model
 }
@@ -269,6 +276,13 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status, m.errStatus = "Exported subscriptions to "+msg.path, false
 		}
 		return m, nil
+	case colorSchemeSavedMsg:
+		if msg.err != nil {
+			m.setError(fmt.Errorf("save color scheme: %w", msg.err))
+		} else {
+			m.status, m.errStatus = "Color scheme: "+msg.name, false
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.overlay != noOverlay {
 			return m.updateOverlay(msg)
@@ -330,6 +344,8 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.overlay = helpOverlay
 		return m, nil
+	case "c":
+		return m.openColorSchemeChooser()
 	case "a":
 		return m.openInput(addOverlay, "Feed URL", "https://example.com/feed.xml")
 	case "/":
@@ -427,6 +443,9 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.overlay == colorSchemeOverlay {
+		return m.updateColorSchemeChooser(key)
+	}
 	if key == "esc" || key == "ctrl+c" || (key == "q" && (m.overlay == helpOverlay || m.overlay == deleteOverlay)) {
 		m.closeOverlay()
 		return m, nil
@@ -493,6 +512,77 @@ func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m Model) openColorSchemeChooser() (tea.Model, tea.Cmd) {
+	m.overlay = colorSchemeOverlay
+	m.schemeNames = ui.SchemeNames()
+	m.schemeCursor = 0
+	for index, name := range m.schemeNames {
+		if name == m.styles.Name {
+			m.schemeCursor = index
+			break
+		}
+	}
+	m.schemeOriginal = m.styles
+	return m, nil
+}
+
+func (m Model) updateColorSchemeChooser(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "ctrl+c", "q":
+		m.applyStyles(m.schemeOriginal)
+		m.closeOverlay()
+		return m, nil
+	case "j", "down":
+		m.previewColorScheme(1)
+		return m, nil
+	case "k", "up":
+		m.previewColorScheme(-1)
+		return m, nil
+	case "enter":
+		name := m.styles.Name
+		m.closeOverlay()
+		if m.saveScheme == nil {
+			m.status, m.errStatus = "Color scheme: "+name, false
+			return m, nil
+		}
+		save := m.saveScheme
+		return m, func() tea.Msg {
+			return colorSchemeSavedMsg{name: name, err: save(name)}
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) previewColorScheme(delta int) {
+	if len(m.schemeNames) == 0 {
+		return
+	}
+	m.schemeCursor = (m.schemeCursor + delta + len(m.schemeNames)) % len(m.schemeNames)
+	styles, err := ui.ResolveScheme(m.schemeNames[m.schemeCursor])
+	if err == nil {
+		m.applyStyles(styles)
+	}
+}
+
+func (m *Model) applyStyles(styles ui.Styles) {
+	m.styles = styles
+	inputStyles := m.input.Styles()
+	inputStyles.Focused.Text = styles.Base
+	inputStyles.Focused.Placeholder = styles.Dim
+	inputStyles.Focused.Suggestion = styles.Dim
+	inputStyles.Focused.Prompt = lipgloss.NewStyle().Foreground(styles.Scheme.Accent)
+	inputStyles.Blurred.Text = styles.Dim
+	inputStyles.Blurred.Placeholder = styles.Dim
+	inputStyles.Blurred.Suggestion = styles.Dim
+	inputStyles.Blurred.Prompt = styles.Dim
+	inputStyles.Cursor.Color = styles.Scheme.Accent
+	m.input.SetStyles(inputStyles)
+	entry := m.currentReaderEntry()
+	if entry.ID != 0 || entry.Title != "" || entry.Text != "" {
+		m.renderReaderContent(entry)
+	}
 }
 
 func (m *Model) openInput(mode overlay, prompt, placeholder string) (tea.Model, tea.Cmd) {
@@ -983,9 +1073,9 @@ func (m Model) View() tea.View {
 		statusText = "◌ " + statusText
 	}
 	status := statusStyle.Render(truncate(statusText, max(1, m.width-2)))
-	keyText := "j/k move · h/l pane · enter read · r refresh · / search · ? help"
+	keyText := "j/k move · h/l pane · enter read · r refresh · / search · c colors · ? help"
 	if m.active == readerPane {
-		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · ? help"
+		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · c colors · ? help"
 	}
 	keys := m.styles.Dim.Render(truncate(keyText, max(1, m.width-2)))
 	view := m.newView(body + "\n" + status + "\n" + keys)
@@ -1062,7 +1152,18 @@ func (m Model) overlayView() string {
 	switch m.overlay {
 	case helpOverlay:
 		title = "Help"
-		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of article\nctrl+f / ctrl+b page down / up in reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nq or esc        close / quit"
+		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of article\nctrl+f / ctrl+b page down / up in reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               search downloaded articles outside reader\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq or esc        close / quit"
+	case colorSchemeOverlay:
+		title = "Color scheme"
+		lines := make([]string, 0, len(m.schemeNames))
+		for index, name := range m.schemeNames {
+			line := "  " + name
+			if index == m.schemeCursor {
+				line = m.styles.Selected.Width(24).Render("› " + name)
+			}
+			lines = append(lines, line)
+		}
+		content = strings.Join(lines, "\n") + "\n\nj/k preview · Enter save · Esc cancel"
 	case deleteOverlay:
 		title = "Remove feed?"
 		if m.feedCursor >= 2 && m.feedCursor-2 < len(m.feeds) {

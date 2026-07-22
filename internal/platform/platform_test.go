@@ -56,6 +56,47 @@ func TestLoadAppearanceConfigNormalizesColorScheme(t *testing.T) {
 	}
 }
 
+func TestSaveColorSchemeCreatesConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "config.json")
+	if err := SaveColorScheme(path, "  NoRd  "); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Appearance.ColorScheme != "nord" {
+		t.Fatalf("color scheme = %q, want %q", config.Appearance.ColorScheme, "nord")
+	}
+	if config.Browser.Mode != BrowserSystem {
+		t.Fatalf("browser mode = %q, want %q", config.Browser.Mode, BrowserSystem)
+	}
+}
+
+func TestSaveColorSchemePreservesBrowserConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"browser": {"mode": "tui", "command": "w3m", "args": ["-M", "{url}"]},
+		"appearance": {"color_scheme": "dracula"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveColorScheme(path, "solarized-light"); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Appearance.ColorScheme != "solarized-light" {
+		t.Fatalf("color scheme = %q", config.Appearance.ColorScheme)
+	}
+	if config.Browser.Mode != BrowserTUI || config.Browser.Command != "w3m" ||
+		!reflect.DeepEqual(config.Browser.Args, []string{"-M", "{url}"}) {
+		t.Fatalf("browser config changed: %#v", config.Browser)
+	}
+}
+
 func TestLoadTUIBrowserConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{

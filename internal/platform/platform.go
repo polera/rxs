@@ -88,6 +88,38 @@ func LoadConfig(path string) (Config, error) {
 	}
 }
 
+// SaveColorScheme updates the appearance setting while preserving the other
+// values in the local configuration file. Missing files are created from the
+// defaults.
+func SaveColorScheme(path, name string) error {
+	config, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		name = DefaultColorScheme
+	}
+	config.Appearance.ColorScheme = name
+	return saveConfig(path, config)
+}
+
+func saveConfig(path string, config Config) error {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	clean := filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(clean), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(clean, data, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
 func DataDir() (string, error) {
 	if runtime.GOOS == "linux" {
 		if value := os.Getenv("XDG_DATA_HOME"); value != "" {

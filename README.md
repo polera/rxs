@@ -49,6 +49,7 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | `a` / `d` | Add / remove a feed |
 | `o` | Open the original article in the system browser |
 | `i` / `e` | Import / export an OPML file |
+| `c` | Preview and select a color scheme |
 | `?` | Show help |
 | `q` | Quit, or close help and confirmation dialogs |
 | Esc | Close an input dialog |
@@ -86,9 +87,11 @@ The terminal interface includes `default`, `dracula`, `gruvbox-dark`, `nord`,
 
 Names are case-insensitive and surrounding whitespace is ignored. Missing
 appearance configuration uses `default`, which preserves the original terminal
-colors. The foreground and background are both set for named schemes so light
-schemes remain readable. Use `-config PATH` to load the setting from another
-file.
+colors. Press `c` in the interface and use `j` / `k` (or the arrow keys) to
+preview the built-in schemes live. Enter applies the choice and writes it to the
+active configuration file; Esc restores the previous scheme. The foreground and
+background are both set for named schemes so light schemes remain readable. Use
+`-config PATH` to load and persist the setting in another file.
 
 Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional.
 

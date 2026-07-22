@@ -97,6 +97,9 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	} else {
 		model = app.New(repository, refresher, platform.OpenBrowser, styles)
 	}
+	model.SetColorSchemeSaver(func(name string) error {
+		return platform.SaveColorScheme(*configPath, name)
+	})
 	_, err = tea.NewProgram(model).Run()
 	return err
 }

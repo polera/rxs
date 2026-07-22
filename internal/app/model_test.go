@@ -133,6 +133,72 @@ func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {
 	}
 }
 
+func TestColorSchemeChooserPreviewsAndPersistsSelection(t *testing.T) {
+	model, _ := loadedModel(t)
+	var saved string
+	model.SetColorSchemeSaver(func(name string) error {
+		saved = name
+		return nil
+	})
+
+	model, _ = update(t, model, key('c'))
+	if model.overlay != colorSchemeOverlay {
+		t.Fatalf("c opened overlay %v", model.overlay)
+	}
+	model, _ = update(t, model, key('j'))
+	if model.styles.Name != "dracula" {
+		t.Fatalf("previewed scheme = %q, want dracula", model.styles.Name)
+	}
+	dracula, err := ui.ResolveScheme("dracula")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := model.View()
+	if !reflect.DeepEqual(view.ForegroundColor, dracula.Scheme.Foreground) ||
+		!reflect.DeepEqual(view.BackgroundColor, dracula.Scheme.Background) {
+		t.Fatal("preview did not update the terminal colors")
+	}
+
+	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.overlay != noOverlay || cmd == nil {
+		t.Fatalf("selection did not close and schedule persistence: overlay=%v cmd=%v", model.overlay, cmd)
+	}
+	model, _ = update(t, model, cmd())
+	if saved != "dracula" {
+		t.Fatalf("saved scheme = %q, want dracula", saved)
+	}
+	if model.styles.Name != "dracula" || model.errStatus {
+		t.Fatalf("selected scheme was not retained: styles=%q status=%q", model.styles.Name, model.status)
+	}
+}
+
+func TestColorSchemeChooserCancelRestoresOriginal(t *testing.T) {
+	styles, err := ui.ResolveScheme("nord")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{}
+	model := New(store, fakeRefresher{}, func(string) error { return nil }, styles)
+	saves := 0
+	model.SetColorSchemeSaver(func(string) error {
+		saves++
+		return nil
+	})
+
+	model, _ = update(t, model, key('c'))
+	model, _ = update(t, model, key('j'))
+	if model.styles.Name == "nord" {
+		t.Fatal("navigation did not preview another scheme")
+	}
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if model.overlay != noOverlay || model.styles.Name != "nord" {
+		t.Fatalf("cancel left overlay=%v scheme=%q", model.overlay, model.styles.Name)
+	}
+	if saves != 0 {
+		t.Fatalf("cancel saved %d times", saves)
+	}
+}
+
 func TestHighlightDoesNotMarkReadButOpeningDoes(t *testing.T) {
 	model, store := loadedModel(t)
 	model, _ = update(t, model, key('l'))
