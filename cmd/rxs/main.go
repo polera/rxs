@@ -94,6 +94,9 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 		model = app.NewWithTUIBrowser(repository, refresher, func(rawURL string) (*exec.Cmd, error) {
 			return platform.BrowserCommand(config.Browser, rawURL)
 		}, styles)
+		if err := platform.ValidateBrowserConfig(config.Browser); err != nil {
+			model.SetWarningStatus(err.Error())
+		}
 	} else {
 		model = app.New(repository, refresher, platform.OpenBrowser, styles)
 	}

@@ -19,6 +19,7 @@ type Scheme struct {
 	Accent              color.Color
 	Muted               color.Color
 	Danger              color.Color
+	Warning             color.Color
 	Success             color.Color
 	Selection           color.Color
 	SelectionForeground color.Color
@@ -34,6 +35,7 @@ type Styles struct {
 	Selected    lipgloss.Style
 	Dim         lipgloss.Style
 	Danger      lipgloss.Style
+	Warning     lipgloss.Style
 	Success     lipgloss.Style
 	Link        lipgloss.Style
 	SearchMatch lipgloss.Style
@@ -44,6 +46,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("63"),
 		Muted:               lipgloss.Color("244"),
 		Danger:              lipgloss.Color("203"),
+		Warning:             lipgloss.Color("214"),
 		Success:             lipgloss.Color("42"),
 		Selection:           lipgloss.Color("63"),
 		SelectionForeground: lipgloss.Color("230"),
@@ -56,6 +59,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("#bd93f9"),
 		Muted:               lipgloss.Color("#6272a4"),
 		Danger:              lipgloss.Color("#ff5555"),
+		Warning:             lipgloss.Color("#f1fa8c"),
 		Success:             lipgloss.Color("#50fa7b"),
 		Selection:           lipgloss.Color("#44475a"),
 		SelectionForeground: lipgloss.Color("#f8f8f2"),
@@ -68,6 +72,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("#d79921"),
 		Muted:               lipgloss.Color("#928374"),
 		Danger:              lipgloss.Color("#fb4934"),
+		Warning:             lipgloss.Color("#fabd2f"),
 		Success:             lipgloss.Color("#b8bb26"),
 		Selection:           lipgloss.Color("#504945"),
 		SelectionForeground: lipgloss.Color("#fbf1c7"),
@@ -80,6 +85,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("#88c0d0"),
 		Muted:               lipgloss.Color("#7b88a1"),
 		Danger:              lipgloss.Color("#bf616a"),
+		Warning:             lipgloss.Color("#ebcb8b"),
 		Success:             lipgloss.Color("#a3be8c"),
 		Selection:           lipgloss.Color("#4c566a"),
 		SelectionForeground: lipgloss.Color("#eceff4"),
@@ -92,6 +98,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("#b58900"),
 		Muted:               lipgloss.Color("#586e75"),
 		Danger:              lipgloss.Color("#dc322f"),
+		Warning:             lipgloss.Color("#b58900"),
 		Success:             lipgloss.Color("#859900"),
 		Selection:           lipgloss.Color("#073642"),
 		SelectionForeground: lipgloss.Color("#eee8d5"),
@@ -104,6 +111,7 @@ var schemes = map[string]Scheme{
 		Accent:              lipgloss.Color("#b58900"),
 		Muted:               lipgloss.Color("#93a1a1"),
 		Danger:              lipgloss.Color("#dc322f"),
+		Warning:             lipgloss.Color("#b58900"),
 		Success:             lipgloss.Color("#859900"),
 		Selection:           lipgloss.Color("#eee8d5"),
 		SelectionForeground: lipgloss.Color("#586e75"),
@@ -150,6 +158,7 @@ func stylesFor(name string, scheme Scheme) Styles {
 		Selected:    lipgloss.NewStyle().Foreground(scheme.SelectionForeground).Background(scheme.Selection).Bold(true),
 		Dim:         lipgloss.NewStyle().Foreground(scheme.Muted),
 		Danger:      lipgloss.NewStyle().Foreground(scheme.Danger),
+		Warning:     lipgloss.NewStyle().Foreground(scheme.Warning),
 		Success:     lipgloss.NewStyle().Foreground(scheme.Success),
 		Link:        lipgloss.NewStyle().Foreground(scheme.Link).Underline(true),
 		SearchMatch: lipgloss.NewStyle().Foreground(scheme.SearchMatch).Underline(true),

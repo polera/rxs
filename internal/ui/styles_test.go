@@ -56,6 +56,7 @@ func TestDefaultSchemePreservesOriginalColors(t *testing.T) {
 		{"accent", styles.Scheme.Accent, lipgloss.Color("63")},
 		{"muted", styles.Scheme.Muted, lipgloss.Color("244")},
 		{"danger", styles.Scheme.Danger, lipgloss.Color("203")},
+		{"warning", styles.Scheme.Warning, lipgloss.Color("214")},
 		{"success", styles.Scheme.Success, lipgloss.Color("42")},
 		{"selection", styles.Scheme.Selection, lipgloss.Color("63")},
 		{"selection foreground", styles.Scheme.SelectionForeground, lipgloss.Color("230")},

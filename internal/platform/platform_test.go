@@ -131,6 +131,26 @@ func TestLoadConfigRejectsTUIWithoutCommand(t *testing.T) {
 	}
 }
 
+func TestValidateBrowserConfigWarnsWhenCommandDoesNotExist(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	err := ValidateBrowserConfig(BrowserConfig{Mode: BrowserTUI, Command: "missing-browser"})
+	if err == nil || err.Error() != `browser command "missing-browser" was not found; update browser.command in config` {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidateBrowserConfigAcceptsCommandOnPath(t *testing.T) {
+	dir := t.TempDir()
+	commandPath := filepath.Join(dir, "test-browser")
+	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if err := ValidateBrowserConfig(BrowserConfig{Mode: BrowserTUI, Command: "test-browser"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBrowserCommandAppendsURLWithoutPlaceholder(t *testing.T) {
 	command, err := BrowserCommand(BrowserConfig{Command: "lynx", Args: []string{"-accept_all_cookies"}}, "https://example.test")
 	if err != nil {

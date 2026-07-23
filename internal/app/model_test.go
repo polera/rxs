@@ -134,6 +134,33 @@ func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {
 	}
 }
 
+func TestWarningStatusUsesWarningStyleAndDoesNotBlockLoading(t *testing.T) {
+	styles, err := ui.ResolveScheme("solarized-light")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		feeds:   []domain.Feed{{ID: 1, Title: "Feed"}},
+		entries: []domain.Entry{{ID: 1, Title: "Article"}},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil }, styles)
+	warning := `browser command "missing-browser" was not found`
+	model.SetWarningStatus(warning)
+
+	model, cmd := update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
+	if cmd != nil || model.status != warning || model.errStatus {
+		t.Fatalf("status = %q, error = %t, cmd = %v", model.status, model.errStatus, cmd)
+	}
+	if view := model.View().Content; !strings.Contains(view, styles.Warning.Render(warning)) {
+		t.Fatalf("warning status does not use warning style: %q", view)
+	}
+
+	model, _ = update(t, model, browserMsg{target: "link"})
+	if model.status != "Opened link" || model.status == model.warningStatus {
+		t.Fatalf("replacement status = %q, warning = %q", model.status, model.warningStatus)
+	}
+}
+
 func TestColorSchemeChooserPreviewsAndPersistsSelection(t *testing.T) {
 	model, _ := loadedModel(t)
 	var saved string
@@ -416,11 +443,32 @@ func TestReaderPagesWithVimControlKeys(t *testing.T) {
 	}
 }
 
-func TestPagingKeysDoNothingOutsideReader(t *testing.T) {
+func TestFeedListPagesWithVimControlKeys(t *testing.T) {
+	store := &fakeStore{}
+	for i := 0; i < 12; i++ {
+		store.feeds = append(store.feeds, domain.Feed{ID: int64(i + 1), Title: fmt.Sprintf("Feed %02d", i)})
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds})
+	model, _ = update(t, model, tea.WindowSizeMsg{Width: 50, Height: 10})
+
+	page := model.listViewHeight()
+	model, cmd := update(t, model, ctrlKey('f'))
+	if model.feedCursor != page || model.filter.FeedID != store.feeds[page-2].ID || cmd == nil {
+		t.Fatalf("ctrl+f: cursor=%d filter=%+v cmd=%v, want cursor %d and a reload", model.feedCursor, model.filter, cmd, page)
+	}
+	model, cmd = update(t, model, ctrlKey('b'))
+	if model.feedCursor != 0 || model.filter.FeedID != 0 || cmd == nil {
+		t.Fatalf("ctrl+b: cursor=%d filter=%+v cmd=%v, want first row and a reload", model.feedCursor, model.filter, cmd)
+	}
+}
+
+func TestFeedPagingKeysDoNothingInArticleList(t *testing.T) {
 	model, _ := loadedModel(t)
-	model, _ = update(t, model, ctrlKey('f'))
-	if model.active != feedsPane || model.feedCursor != 0 {
-		t.Fatalf("ctrl+f outside the reader moved to pane %d, cursor %d", model.active, model.feedCursor)
+	model.active = articlesPane
+	model, cmd := update(t, model, ctrlKey('f'))
+	if model.active != articlesPane || model.entryCursor != 0 || cmd != nil {
+		t.Fatalf("ctrl+f in articles moved to pane %d, cursor %d with cmd %v", model.active, model.entryCursor, cmd)
 	}
 }
 
@@ -433,9 +481,75 @@ func TestQCanBeTypedInInput(t *testing.T) {
 	}
 }
 
+func TestQuitRequiresConfirmation(t *testing.T) {
+	model, _ := loadedModel(t)
+
+	model, cmd := update(t, model, key('q'))
+	if model.overlay != quitOverlay || cmd != nil {
+		t.Fatalf("q returned overlay=%v cmd=%v, want quit confirmation", model.overlay, cmd)
+	}
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Are you sure you want to quit?") {
+		t.Fatalf("quit confirmation is missing from view: %q", view)
+	}
+
+	model, cmd = update(t, model, key('n'))
+	if model.overlay != noOverlay || cmd != nil {
+		t.Fatalf("n did not cancel quit: overlay=%v cmd=%v", model.overlay, cmd)
+	}
+
+	model, cmd = update(t, model, ctrlKey('c'))
+	if model.overlay != quitOverlay || cmd != nil {
+		t.Fatalf("ctrl+c returned overlay=%v cmd=%v, want quit confirmation", model.overlay, cmd)
+	}
+	model, cmd = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("confirming quit returned no command")
+	}
+	message := cmd()
+	if _, ok := message.(tea.QuitMsg); !ok {
+		t.Fatalf("confirming quit returned %T, want tea.QuitMsg", message)
+	}
+}
+
+func TestFeedFilterMatchesTitleAndURLAndCanBeCleared(t *testing.T) {
+	store := &fakeStore{
+		feeds: []domain.Feed{
+			{ID: 1, Title: "Go Blog", URL: "https://go.dev/blog/feed.atom"},
+			{ID: 2, Title: "Project News", URL: "https://example.test/releases.xml"},
+			{ID: 3, Title: "Daily Notes", URL: "https://notes.test/feed"},
+		},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds})
+
+	model, _ = update(t, model, key('/'))
+	if model.overlay != feedFilterOverlay {
+		t.Fatalf("/ in feeds opened overlay %v, want feed filter", model.overlay)
+	}
+	for _, character := range "RELEASES" {
+		model, _ = update(t, model, key(character))
+	}
+	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil || model.feedFilter != "RELEASES" || len(model.feeds) != 1 || model.feeds[0].ID != 2 {
+		t.Fatalf("filtered model: term=%q feeds=%#v cmd=%v", model.feedFilter, model.feeds, cmd)
+	}
+	if len(model.allFeeds) != 3 || model.feedCursor != 0 || model.filter.FeedID != 0 {
+		t.Fatalf("filter changed backing feeds or selection: all=%d cursor=%d filter=%+v", len(model.allFeeds), model.feedCursor, model.filter)
+	}
+
+	model, _ = update(t, model, cmd())
+	model, _ = update(t, model, key('/'))
+	model.input.SetValue("")
+	model, cmd = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil || model.feedFilter != "" || len(model.feeds) != 3 {
+		t.Fatalf("cleared filter: term=%q feeds=%d cmd=%v", model.feedFilter, len(model.feeds), cmd)
+	}
+}
+
 func TestSearchInputPreservesCurrentTerms(t *testing.T) {
 	model, _ := loadedModel(t)
 	model.filter.Search = "current terms"
+	model.active = articlesPane
 
 	model, _ = update(t, model, key('/'))
 	if model.overlay != searchOverlay || model.input.Value() != "current terms" {
@@ -454,6 +568,21 @@ func TestStaleLoadIsIgnored(t *testing.T) {
 	model, _ = update(t, model, loadedMsg{filter: domain.EntryFilter{Search: "old"}, entries: []domain.Entry{{Title: "stale"}}})
 	if len(model.entries) != 2 {
 		t.Fatalf("stale load replaced entries: %#v", model.entries)
+	}
+}
+
+func TestArticleLoadingStatusClearsWhenLoadCompletes(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.errStatus = true
+
+	model, cmd := update(t, model, key('j'))
+	if model.status != "Loading articles…" || model.errStatus || cmd == nil {
+		t.Fatalf("loading status = %q, error = %t, cmd = %v", model.status, model.errStatus, cmd)
+	}
+
+	model, _ = update(t, model, cmd())
+	if model.status != "Ready" || model.errStatus {
+		t.Fatalf("completed status = %q, error = %t", model.status, model.errStatus)
 	}
 }
 

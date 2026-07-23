@@ -165,6 +165,23 @@ func OpenBrowser(rawURL string) error {
 	return nil
 }
 
+// ValidateBrowserConfig checks whether a configured interactive browser can be
+// launched. Callers can surface the result as a warning without preventing the
+// rest of the application from starting.
+func ValidateBrowserConfig(config BrowserConfig) error {
+	if config.Mode != BrowserTUI {
+		return nil
+	}
+	command := strings.TrimSpace(config.Command)
+	if command == "" {
+		return errors.New("TUI browser command is required")
+	}
+	if _, err := exec.LookPath(command); err != nil {
+		return fmt.Errorf("browser command %q was not found; update browser.command in config", command)
+	}
+	return nil
+}
+
 // BrowserCommand builds an interactive command for use with Bubble Tea's
 // terminal-releasing ExecProcess command.
 func BrowserCommand(config BrowserConfig, rawURL string) (*exec.Cmd, error) {

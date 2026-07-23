@@ -179,6 +179,7 @@ func resolveHTTPURL(href string, base *url.URL) (string, bool) {
 		}
 		target = base.ResolveReference(target)
 	}
+	target.Scheme = strings.ToLower(target.Scheme)
 	if (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
 		return "", false
 	}

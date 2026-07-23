@@ -20,12 +20,14 @@ func TestText(t *testing.T) {
 func TestLinksResolvesRelativeURLsAndFiltersSchemes(t *testing.T) {
 	fragment := `<p><a href="/docs/start"><strong>Start</strong> here</a>
 		<a href="https://other.example/path">Other</a>
+		<a href="HTTPS://upper.example/path">Upper</a>
 		<a href="mailto:hello@example.test">Email</a>
 		<a href="#details"></a></p>`
 	got := Links(fragment, "https://example.test/articles/one")
 	want := []Link{
 		{Text: "Start here", URL: "https://example.test/docs/start"},
 		{Text: "Other", URL: "https://other.example/path"},
+		{Text: "Upper", URL: "https://upper.example/path"},
 		{Text: "https://example.test/articles/one#details", URL: "https://example.test/articles/one#details"},
 	}
 	if len(got) != len(want) {

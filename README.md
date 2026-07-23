@@ -45,7 +45,7 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | --- | --- |
 | `j` / `k`, arrows | Move in the active pane; scroll by line in the reader |
 | `h` / `l` | Change pane |
-| `ctrl+f` / `ctrl+b` | Page down / up in the reader |
+| `ctrl+f` / `ctrl+b` | Page down / up in the feed list or reader |
 | `ctrl+d` / `ctrl+u` | Half page down / up in the reader |
 | `gg` / `G` | Go to the beginning / end of the active list or article |
 | `/`, then `n` / `N` | Find in the open article; select the next / previous match |
@@ -54,14 +54,15 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | Space | Toggle read/unread |
 | `s` | Toggle starred |
 | `r` / `R` | Refresh selected feed / all feeds |
-| `/` outside the reader | Search downloaded titles and text; submit an empty search to clear |
+| `/` in feeds | Filter feeds by title or URL; submit an empty filter to clear |
+| `/` in articles | Search downloaded titles and text; submit an empty search to clear |
 | `u` | Toggle unread-only filtering |
 | `a` / `d` | Add / remove a feed |
 | `o` | Open the original article in the system browser |
 | `i` / `e` | Import / export an OPML file |
 | `c` | Preview and select a color scheme |
 | `?` | Show help |
-| `q` | Quit, or close help and confirmation dialogs |
+| `q` | Ask to quit, or close help and confirmation dialogs |
 | Esc | Close an input dialog |
 
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal; press `h` or Left to return to the article list.
