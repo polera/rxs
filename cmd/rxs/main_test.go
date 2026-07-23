@@ -64,6 +64,30 @@ func TestUnknownSubcommandIsRejected(t *testing.T) {
 	}
 }
 
+func TestUpgradeSubcommandRejectsArguments(t *testing.T) {
+	err := runArgs([]string{"upgrade", "later"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "does not accept arguments") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestInstalledVersionPrefersLinkedRelease(t *testing.T) {
+	tests := []struct {
+		linked string
+		module string
+		want   string
+	}{
+		{linked: "v1.2.3", module: "v1.2.2", want: "v1.2.3"},
+		{linked: "dev", module: "v1.2.2", want: "v1.2.2"},
+		{linked: "dev", module: "(devel)", want: "dev"},
+	}
+	for _, test := range tests {
+		if got := chooseInstalledVersion(test.linked, test.module); got != test.want {
+			t.Fatalf("chooseInstalledVersion(%q, %q) = %q, want %q", test.linked, test.module, got, test.want)
+		}
+	}
+}
+
 func TestInvalidColorSchemeIsRejectedBeforeDatabaseOpen(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")

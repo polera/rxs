@@ -21,6 +21,24 @@ go install github.com/polera/rxs/cmd/rxs@latest
 rxs
 ```
 
+Precompiled binaries for Linux, macOS, and Windows on amd64 and arm64 are also
+available from [GitHub Releases](https://github.com/polera/rxs/releases/latest).
+Download the archive for your platform, extract `rxs` (`rxs.exe` on Windows),
+and place it somewhere on your `PATH`. Each release includes `checksums.txt`
+for verifying the download.
+
+rxs checks GitHub Releases once a day when starting the interactive UI. If a
+newer release is available, choose to install it or defer the prompt for 24
+hours. To check and upgrade immediately, run:
+
+```sh
+rxs upgrade
+```
+
+Upgrades download the release archive for the current operating system and
+architecture, verify it against the published SHA-256 checksum, and replace the
+current executable.
+
 For local development:
 
 ```sh
@@ -116,4 +134,5 @@ go vet ./...
 
 Fixtures for RSS, Atom, and JSON Feed live in `testdata/feeds`. Database migrations are embedded from `internal/store/migrations`.
 
-Release builds are configured through GoReleaser for Linux, macOS, and Windows on amd64 and arm64, with CGO disabled.
+Release workflows build Linux, macOS, and Windows binaries for amd64 and arm64,
+with CGO disabled.

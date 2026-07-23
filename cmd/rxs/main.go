@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -9,13 +10,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mattn/go-isatty"
 	"github.com/polera/rxs/internal/app"
 	feedservice "github.com/polera/rxs/internal/feed"
 	"github.com/polera/rxs/internal/platform"
 	"github.com/polera/rxs/internal/store"
 	"github.com/polera/rxs/internal/ui"
+	"github.com/polera/rxs/internal/upgrade"
 )
 
 var (
@@ -36,6 +42,7 @@ func run() error {
 }
 
 func runArgs(args []string, stdout, stderr io.Writer) error {
+	currentVersion := installedVersion(version)
 	defaultPath, err := databasePath()
 	if err != nil {
 		return err
@@ -52,6 +59,7 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: rxs [options]")
 		fmt.Fprintln(stderr, "       rxs [options] add URL")
+		fmt.Fprintln(stderr, "       rxs [options] upgrade")
 		fmt.Fprintln(stderr, "\nOptions:")
 		flags.PrintDefaults()
 	}
@@ -62,7 +70,7 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "rxs %s (%s, %s)\n", version, commit, date)
+		fmt.Fprintf(stdout, "rxs %s (%s, %s)\n", currentVersion, commit, date)
 		return nil
 	}
 	commandArgs := flags.Args()
@@ -70,9 +78,14 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 		switch commandArgs[0] {
 		case "add":
 			return runAddCommand(context.Background(), commandArgs[1:], *dbPath, stdout, stderr)
+		case "upgrade":
+			return runUpgradeCommand(commandArgs[1:], currentVersion, stdout, stderr)
 		default:
 			return fmt.Errorf("unknown command %q", commandArgs[0])
 		}
+	}
+	if interactiveTerminal() && offerUpgrade(currentVersion, os.Stdin, stdout, stderr) {
+		return nil
 	}
 	config, err := platform.LoadConfig(*configPath)
 	if err != nil {
@@ -87,7 +100,7 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer repository.Close()
-	client := feedservice.NewClient(version)
+	client := feedservice.NewClient(currentVersion)
 	refresher := feedservice.NewService(repository, client)
 	var model app.Model
 	if config.Browser.Mode == platform.BrowserTUI {
@@ -105,6 +118,114 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	})
 	_, err = tea.NewProgram(model).Run()
 	return err
+}
+
+func runUpgradeCommand(args []string, installed string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("rxs upgrade", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.Usage = func() { fmt.Fprintln(stderr, "Usage: rxs upgrade") }
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("upgrade does not accept arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := upgrade.NewClient().Upgrade(ctx, installed, "")
+	if err != nil {
+		return err
+	}
+	if !result.Updated {
+		fmt.Fprintf(stdout, "no upgrade available (installed %s; latest release %s)\n", result.Previous, result.Current)
+		return nil
+	}
+	_, err = fmt.Fprintf(stdout, "upgraded rxs from %s to %s\n", result.Previous, result.Current)
+	return err
+}
+
+func offerUpgrade(installed string, stdin io.Reader, stdout, stderr io.Writer) bool {
+	if _, err := upgrade.Available(installed, installed); err != nil {
+		return false
+	}
+	statePath, err := upgrade.StateFile()
+	if err != nil {
+		return false
+	}
+	state, err := upgrade.LoadState(statePath)
+	if err != nil {
+		state = upgrade.State{}
+	}
+	now := time.Now()
+	if !state.ShouldCheck(now) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	client := upgrade.NewClient()
+	release, err := client.Latest(ctx)
+	cancel()
+	if err != nil {
+		return false
+	}
+	state.CheckedAt = now
+	state.LatestVersion = release.Version
+	_ = upgrade.SaveState(statePath, state)
+	available, err := upgrade.Available(installed, release.Version)
+	if err != nil || !available {
+		return false
+	}
+
+	fmt.Fprintf(stdout, "A new rxs release is available: %s -> %s\n", installed, release.Version)
+	fmt.Fprint(stdout, "Upgrade now? [y/N] ")
+	answer, _ := bufio.NewReader(stdin).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "y" && answer != "yes" {
+		state.DeferredUntil = now.Add(upgrade.DeferDuration)
+		_ = upgrade.SaveState(statePath, state)
+		fmt.Fprintln(stdout, "Upgrade deferred. Run `rxs upgrade` at any time.")
+		return false
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	result, err := client.UpgradeTo(ctx, installed, "", release)
+	cancel()
+	if err != nil {
+		fmt.Fprintln(stderr, "rxs: upgrade failed:", err)
+		return false
+	}
+	if result.Updated {
+		fmt.Fprintf(stdout, "Upgraded rxs from %s to %s. Restart rxs to continue.\n", result.Previous, result.Current)
+		return true
+	}
+	return false
+}
+
+func installedVersion(linked string) string {
+	module := ""
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		module = info.Main.Version
+	}
+	return chooseInstalledVersion(linked, module)
+}
+
+func chooseInstalledVersion(linked, module string) string {
+	if linked != "" && linked != "dev" {
+		return linked
+	}
+	if module != "" && module != "(devel)" {
+		return module
+	}
+	return linked
+}
+
+func interactiveTerminal() bool {
+	stdin := os.Stdin.Fd()
+	stdout := os.Stdout.Fd()
+	return (isatty.IsTerminal(stdin) || isatty.IsCygwinTerminal(stdin)) &&
+		(isatty.IsTerminal(stdout) || isatty.IsCygwinTerminal(stdout))
 }
 
 func runAddCommand(ctx context.Context, args []string, defaultDBPath string, stdout, stderr io.Writer) error {
@@ -139,7 +260,7 @@ func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer) erro
 	if err != nil {
 		return err
 	}
-	result := feedservice.NewService(repository, feedservice.NewClient(version)).Refresh(ctx, source.ID)
+	result := feedservice.NewService(repository, feedservice.NewClient(installedVersion(version))).Refresh(ctx, source.ID)
 	if result.Err != nil {
 		return fmt.Errorf("feed %q was added, but its initial refresh failed: %w", source.URL, result.Err)
 	}

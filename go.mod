@@ -7,6 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/mattn/go-isatty v0.0.20
 	github.com/mmcdole/gofeed v1.4.0
 	golang.org/x/net v0.57.0
 	modernc.org/sqlite v1.54.0
@@ -24,7 +25,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.24 // indirect
 	github.com/mmcdole/goxpp/v2 v2.0.0 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
