@@ -24,11 +24,19 @@ const (
 type Config struct {
 	Browser    BrowserConfig    `json:"browser"`
 	Appearance AppearanceConfig `json:"appearance"`
+	Reading    ReadingConfig    `json:"reading"`
 }
 
 // AppearanceConfig contains visual settings for the terminal interface.
 type AppearanceConfig struct {
 	ColorScheme string `json:"color_scheme"`
+}
+
+// ReadingConfig controls how previewing and reading articles affects their
+// read state.
+type ReadingConfig struct {
+	MarkReadOnScroll bool `json:"mark_read_on_scroll"`
+	HideRead         bool `json:"hide_read"`
 }
 
 // BrowserConfig selects either the operating system browser or an interactive
@@ -43,6 +51,7 @@ func DefaultConfig() Config {
 	return Config{
 		Browser:    BrowserConfig{Mode: BrowserSystem},
 		Appearance: AppearanceConfig{ColorScheme: DefaultColorScheme},
+		Reading:    ReadingConfig{HideRead: true},
 	}
 }
 

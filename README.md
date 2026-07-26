@@ -68,13 +68,13 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | `gg` / `G` | Go to the beginning / end of the active list or article |
 | `/`, then `n` / `N` | Find in the open article; select the next / previous match |
 | Tab / Shift-Tab | Change pane, or select the next / previous link in the reader |
-| Enter | Open an article and mark it read, or open the selected link |
+| Enter | Open an article, or open the selected link |
 | Space | Toggle read/unread |
 | `s` | Toggle starred |
 | `r` / `R` | Refresh selected feed / all feeds |
 | `/` in feeds | Filter feeds by title or URL; submit an empty filter to clear |
 | `/` in articles | Search downloaded titles and text; submit an empty search to clear |
-| `u` | Toggle unread-only filtering |
+| `u` | Show / hide read articles for this session |
 | `a` / `d` | Add / remove a feed |
 | `o` | Open the original article in the system browser |
 | `i` / `e` | Import / export an OPML file |
@@ -83,7 +83,37 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | `q` | Ask to quit, or close help and confirmation dialogs |
 | Esc | Close an input dialog |
 
-The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal; press `h` or Left to return to the article list.
+The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
+
+### Reading configuration
+
+Read articles are hidden from the article listing by default. Press `u` to
+show them for the current session. To show read articles initially instead, add
+this to `config.json`:
+
+```json
+{
+  "reading": {
+    "hide_read": false
+  }
+}
+```
+
+Article previews remain unread while you move through the article list by
+default. To mark each preview read when you scroll away from it, add this to
+`config.json`:
+
+```json
+{
+  "reading": {
+    "mark_read_on_scroll": true
+  }
+}
+```
+
+The setting applies to `j` / `k`, arrow keys, `gg`, and `G`. A jump marks only
+the preview you leave, and movement clamped at a list boundary does not mark
+anything.
 
 ### Browser configuration
 

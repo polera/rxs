@@ -41,14 +41,18 @@ func (m Model) openURL(url, target string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) loadCmd() tea.Cmd {
+	return m.loadCmdPreserving(0)
+}
+
+func (m Model) loadCmdPreserving(entryID int64) tea.Cmd {
 	filter := m.filter
 	return func() tea.Msg {
 		feeds, err := m.store.Feeds(context.Background())
 		if err != nil {
-			return loadedMsg{filter: filter, err: err}
+			return loadedMsg{filter: filter, entryID: entryID, err: err}
 		}
 		entries, err := m.store.Entries(context.Background(), filter)
-		return loadedMsg{feeds: feeds, entries: entries, filter: filter, err: err}
+		return loadedMsg{feeds: feeds, entries: entries, filter: filter, entryID: entryID, err: err}
 	}
 }
 
@@ -100,6 +104,22 @@ func (m *Model) setError(err error) {
 func (m *Model) clampCursors() {
 	m.feedCursor = clamp(m.feedCursor, 0, len(m.feeds)+1)
 	m.entryCursor = clamp(m.entryCursor, 0, len(m.entries)-1)
+}
+
+func (m Model) selectedEntryID() int64 {
+	if m.entryCursor >= 0 && m.entryCursor < len(m.entries) {
+		return m.entries[m.entryCursor].ID
+	}
+	return 0
+}
+
+func (m *Model) restoreEntrySelection(id int64) {
+	for index := range m.entries {
+		if m.entries[index].ID == id {
+			m.entryCursor = index
+			return
+		}
+	}
 }
 
 func (m *Model) reconcileFeedCursor() {

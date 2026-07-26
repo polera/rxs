@@ -79,6 +79,7 @@ func (m *Model) searchReader(query string) {
 		}
 	}
 	m.showReaderMatch()
+	m.checkReaderReachedBottom()
 }
 
 func (m *Model) selectReaderMatch(delta int) {
@@ -100,6 +101,7 @@ func (m *Model) showReaderMatch() {
 	m.renderReaderContent(m.currentReaderEntry())
 	m.reader.EnsureVisible(match.line, match.start, match.end)
 	m.status, m.errStatus = fmt.Sprintf("Match %d/%d: %s", m.readerMatchCursor+1, len(m.readerMatches), m.readerSearch), false
+	m.checkReaderReachedBottom()
 }
 
 func findReaderMatches(content, query string) []readerMatch {
@@ -158,6 +160,7 @@ func (m *Model) selectReaderLink(delta int) {
 	m.status, m.errStatus = fmt.Sprintf("Link %d/%d: %s", m.readerLinkCursor+1, len(m.readerLinks), link.Text), false
 	m.renderReaderContent(m.currentReaderEntry())
 	m.ensureReaderLinkVisible(m.readerLinkCursor, link)
+	m.checkReaderReachedBottom()
 }
 
 func (m *Model) ensureReaderLinkVisible(index int, link render.Link) {
@@ -208,8 +211,15 @@ func (m *Model) resizeReader() {
 	if entry.ID != 0 || entry.Title != "" || entry.Text != "" {
 		m.renderReaderContent(entry)
 	}
+	m.checkReaderReachedBottom()
 }
 
 func (m Model) readerTextWidth() int {
 	return max(1, m.reader.Width()-m.reader.Style.GetHorizontalFrameSize())
+}
+
+func (m *Model) checkReaderReachedBottom() {
+	if m.active == readerPane && m.readerEntry != nil && m.reader.AtBottom() {
+		m.readerReachedBottom = true
+	}
 }

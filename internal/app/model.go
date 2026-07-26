@@ -78,28 +78,31 @@ type Model struct {
 	filter     domain.EntryFilter
 	feedFilter string
 
-	feedCursor        int
-	entryCursor       int
-	readerEntry       *domain.Entry
-	readerLinks       []render.Link
-	readerLinkCursor  int
-	readerSearch      string
-	readerMatches     []readerMatch
-	readerMatchCursor int
-	pendingG          bool
-	active            pane
-	overlay           overlay
-	schemeNames       []string
-	schemeCursor      int
-	schemeOriginal    ui.Styles
-	input             textinput.Model
-	reader            viewport.Model
+	feedCursor          int
+	entryCursor         int
+	readerEntry         *domain.Entry
+	readerLinks         []render.Link
+	readerLinkCursor    int
+	readerSearch        string
+	readerMatches       []readerMatch
+	readerMatchCursor   int
+	readerReachedBottom bool
+	pendingG            bool
+	active              pane
+	overlay             overlay
+	schemeNames         []string
+	schemeCursor        int
+	schemeOriginal      ui.Styles
+	input               textinput.Model
+	reader              viewport.Model
 
 	width, height int
 	busy          bool
 	status        string
 	errStatus     bool
 	warningStatus string
+
+	markReadOnScroll bool
 }
 
 type readerMatch struct {
@@ -111,6 +114,7 @@ type loadedMsg struct {
 	feeds   []domain.Feed
 	entries []domain.Entry
 	filter  domain.EntryFilter
+	entryID int64
 	err     error
 }
 type addMsg struct {
@@ -150,6 +154,18 @@ func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser, sty
 // SetColorSchemeSaver enables persistent color-scheme selection in the UI.
 func (m *Model) SetColorSchemeSaver(saver ColorSchemeSaver) {
 	m.saveScheme = saver
+}
+
+// SetMarkReadOnScroll controls whether moving away from an article preview
+// marks that article as read.
+func (m *Model) SetMarkReadOnScroll(enabled bool) {
+	m.markReadOnScroll = enabled
+}
+
+// SetHideRead controls whether the initial article listing excludes read
+// articles. The setting can still be toggled for the current session.
+func (m *Model) SetHideRead(enabled bool) {
+	m.filter.UnreadOnly = enabled
 }
 
 // SetWarningStatus displays a non-blocking warning until another status
@@ -192,6 +208,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeReader()
+		m.checkReaderReachedBottom()
 		return m, nil
 	case loadedMsg:
 		if msg.err != nil {
@@ -205,6 +222,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFeedSearch()
 		m.reconcileFeedCursor()
 		m.clampCursors()
+		if msg.entryID != 0 {
+			m.restoreEntrySelection(msg.entryID)
+		}
 		m.syncReader()
 		if m.status == "Loading subscriptions…" || m.status == "Loading articles…" {
 			m.status, m.errStatus = "Ready", false
@@ -234,9 +254,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case stateMsg:
 		if msg.err != nil {
 			m.setError(msg.err)
-			return m, m.loadCmd()
 		}
-		return m, m.loadCmd()
+		return m, m.loadCmdPreserving(m.selectedEntryID())
 	case refreshMsg:
 		m.busy = false
 		failures, added := 0, 0
@@ -295,6 +314,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	if m.active == readerPane {
 		var cmd tea.Cmd
 		m.reader, cmd = m.reader.Update(message)
+		m.checkReaderReachedBottom()
 		return m, cmd
 	}
 	return m, nil

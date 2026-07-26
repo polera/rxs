@@ -40,6 +40,53 @@ func TestLoadConfigDefaultsWhenMissing(t *testing.T) {
 	if config.Appearance.ColorScheme != DefaultColorScheme {
 		t.Fatalf("color scheme = %q, want %q", config.Appearance.ColorScheme, DefaultColorScheme)
 	}
+	if config.Reading.MarkReadOnScroll {
+		t.Fatal("mark_read_on_scroll defaulted to true")
+	}
+	if !config.Reading.HideRead {
+		t.Fatal("hide_read did not default to true")
+	}
+}
+
+func TestLoadReadingConfigEnablesMarkReadOnScroll(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"reading":{"mark_read_on_scroll":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Reading.MarkReadOnScroll {
+		t.Fatal("mark_read_on_scroll was not enabled")
+	}
+	if !config.Reading.HideRead {
+		t.Fatal("omitting hide_read changed its true default")
+	}
+}
+
+func TestLoadReadingConfigCanShowReadArticles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"reading":{"hide_read":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Reading.HideRead {
+		t.Fatal("hide_read=false was not applied")
+	}
+}
+
+func TestLoadConfigRejectsUnknownReadingField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"reading":{"mark_on_open":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("unknown reading field was accepted")
+	}
 }
 
 func TestLoadAppearanceConfigNormalizesColorScheme(t *testing.T) {
@@ -94,6 +141,29 @@ func TestSaveColorSchemePreservesBrowserConfig(t *testing.T) {
 	if config.Browser.Mode != BrowserTUI || config.Browser.Command != "w3m" ||
 		!reflect.DeepEqual(config.Browser.Args, []string{"-M", "{url}"}) {
 		t.Fatalf("browser config changed: %#v", config.Browser)
+	}
+}
+
+func TestSaveColorSchemePreservesReadingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"reading": {"mark_read_on_scroll": true, "hide_read": false},
+		"appearance": {"color_scheme": "dracula"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveColorScheme(path, "nord"); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.Reading.MarkReadOnScroll {
+		t.Fatal("saving the color scheme discarded reading configuration")
+	}
+	if config.Reading.HideRead {
+		t.Fatal("saving the color scheme discarded hide_read=false")
 	}
 }
 

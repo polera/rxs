@@ -113,6 +113,8 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	} else {
 		model = app.New(repository, refresher, platform.OpenBrowser, styles)
 	}
+	model.SetMarkReadOnScroll(config.Reading.MarkReadOnScroll)
+	model.SetHideRead(config.Reading.HideRead)
 	model.SetColorSchemeSaver(func(name string) error {
 		return platform.SaveColorScheme(*configPath, name)
 	})

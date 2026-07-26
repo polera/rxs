@@ -52,6 +52,7 @@ func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.readerMatches = nil
 			m.readerMatchCursor = -1
 			m.renderReaderContent(m.currentReaderEntry())
+			m.checkReaderReachedBottom()
 			m.status, m.errStatus = "Article search cleared", false
 			return m, nil
 		}

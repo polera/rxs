@@ -16,11 +16,14 @@ import (
 )
 
 type fakeStore struct {
-	feeds      []domain.Feed
-	entries    []domain.Entry
-	readCalls  []bool
-	starCalls  []bool
-	lastFilter domain.EntryFilter
+	feeds       []domain.Feed
+	entries     []domain.Entry
+	readCalls   []bool
+	readIDs     []int64
+	starCalls   []bool
+	lastFilter  domain.EntryFilter
+	readErr     error
+	persistRead bool
 }
 
 func (s *fakeStore) AddFeed(context.Context, string) (domain.Feed, error) {
@@ -32,10 +35,28 @@ func (s *fakeStore) Feeds(context.Context) ([]domain.Feed, error) {
 }
 func (s *fakeStore) Entries(_ context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
 	s.lastFilter = filter
-	return append([]domain.Entry(nil), s.entries...), nil
+	entries := make([]domain.Entry, 0, len(s.entries))
+	for _, entry := range s.entries {
+		if filter.UnreadOnly && entry.Read {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
-func (s *fakeStore) SetRead(_ context.Context, _ int64, value bool) error {
+func (s *fakeStore) SetRead(_ context.Context, id int64, value bool) error {
 	s.readCalls = append(s.readCalls, value)
+	s.readIDs = append(s.readIDs, id)
+	if s.readErr != nil {
+		return s.readErr
+	}
+	if s.persistRead {
+		for index := range s.entries {
+			if s.entries[index].ID == id {
+				s.entries[index].Read = value
+			}
+		}
+	}
 	return nil
 }
 func (s *fakeStore) SetStarred(_ context.Context, _ int64, value bool) error {
@@ -81,7 +102,10 @@ func loadedModel(t *testing.T) (Model, *fakeStore) {
 	}
 	model := New(store, fakeRefresher{}, func(string) error { return nil })
 	var cmd tea.Cmd
-	model, cmd = update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
+	model, cmd = update(t, model, loadedMsg{
+		feeds:   append([]domain.Feed(nil), store.feeds...),
+		entries: append([]domain.Entry(nil), store.entries...),
+	})
 	if cmd != nil {
 		t.Fatal("loading unexpectedly returned a command")
 	}
@@ -227,7 +251,7 @@ func TestColorSchemeChooserCancelRestoresOriginal(t *testing.T) {
 	}
 }
 
-func TestHighlightDoesNotMarkReadButOpeningDoes(t *testing.T) {
+func TestOpeningDoesNotImmediatelyMarkRead(t *testing.T) {
 	model, store := loadedModel(t)
 	model, _ = update(t, model, key('l'))
 	model, _ = update(t, model, key('j'))
@@ -235,15 +259,251 @@ func TestHighlightDoesNotMarkReadButOpeningDoes(t *testing.T) {
 		t.Fatal("highlighting an article marked it read")
 	}
 	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if model.active != readerPane || cmd == nil {
-		t.Fatal("enter did not open the reader and schedule state persistence")
+	if model.active != readerPane || cmd != nil {
+		t.Fatal("enter did not open the reader without scheduling state persistence")
 	}
-	_ = cmd()
-	if len(store.readCalls) != 1 || !store.readCalls[0] {
+	if len(store.readCalls) != 0 {
 		t.Fatalf("read calls = %v", store.readCalls)
 	}
 	if model.readerEntry == nil || model.readerEntry.ID != 11 {
 		t.Fatalf("opened entry = %#v", model.readerEntry)
+	}
+}
+
+func TestPreviewMarkReadOnScroll(t *testing.T) {
+	model, store := loadedModel(t)
+	model.SetMarkReadOnScroll(true)
+	model.active = articlesPane
+
+	model, cmd := update(t, model, key('j'))
+	if cmd == nil || model.entryCursor != 1 || !model.entries[0].Read || model.entries[1].Read {
+		t.Fatalf("scroll result: cursor=%d entries=%#v cmd=%v", model.entryCursor, model.entries, cmd)
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.readIDs, []int64{10}) || !reflect.DeepEqual(store.readCalls, []bool{true}) {
+		t.Fatalf("read writes: ids=%v values=%v", store.readIDs, store.readCalls)
+	}
+}
+
+func TestPreviewMarkReadOnScrollDisabledBoundariesAndAlreadyRead(t *testing.T) {
+	model, store := loadedModel(t)
+	model.active = articlesPane
+
+	model, cmd := update(t, model, key('j'))
+	if cmd != nil || len(store.readCalls) != 0 {
+		t.Fatal("disabled preview marking scheduled a write")
+	}
+
+	model.SetMarkReadOnScroll(true)
+	model, cmd = update(t, model, key('j'))
+	if cmd != nil {
+		t.Fatal("clamped movement scheduled a write")
+	}
+	model.entries[1].Read = true
+	model, cmd = update(t, model, key('k'))
+	if cmd != nil {
+		t.Fatal("leaving an already-read entry scheduled a write")
+	}
+}
+
+func TestEnteringReaderThroughPaneNavigationTracksArticleWithoutMarkingItImmediately(t *testing.T) {
+	model, store := loadedModel(t)
+	model.SetMarkReadOnScroll(true)
+	model.entries[0].Text = strings.Repeat("long article line\n", 100)
+	model.active = articlesPane
+	model.height = 12
+
+	model, cmd := update(t, model, key('l'))
+	if cmd != nil || model.active != readerPane || model.readerEntry == nil ||
+		model.readerEntry.ID != 10 || model.readerReachedBottom {
+		t.Fatalf("changing to reader pane: active=%d entry=%#v bottom=%t cmd=%v",
+			model.active, model.readerEntry, model.readerReachedBottom, cmd)
+	}
+	model, cmd = update(t, model, key('h'))
+	if cmd != nil || model.active != articlesPane || len(store.readCalls) != 0 {
+		t.Fatalf("changing back: active=%d reads=%v cmd=%v", model.active, store.readCalls, cmd)
+	}
+}
+
+func TestPaneNavigationReaderMarksReadAfterViewingFullArticle(t *testing.T) {
+	for _, entryKey := range []tea.KeyPressMsg{
+		key('l'),
+		tea.KeyPressMsg(tea.Key{Code: tea.KeyRight}),
+		tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}),
+	} {
+		t.Run(entryKey.String(), func(t *testing.T) {
+			model, store := loadedModel(t)
+			model.entries[0].Text = strings.Repeat("long article line\n", 100)
+			model.active = articlesPane
+			model.height = 12
+
+			model, _ = update(t, model, entryKey)
+			model, _ = update(t, model, key('G'))
+			model, cmd := update(t, model, key('h'))
+			if cmd == nil || !model.entries[0].Read {
+				t.Fatalf("reader exit did not schedule read: entry=%#v cmd=%v", model.entries[0], cmd)
+			}
+			_ = cmd()
+			if !reflect.DeepEqual(store.readIDs, []int64{10}) ||
+				!reflect.DeepEqual(store.readCalls, []bool{true}) {
+				t.Fatalf("read writes: ids=%v values=%v", store.readIDs, store.readCalls)
+			}
+		})
+	}
+}
+
+func TestPreviewJumpMarksOnlyArticleBeingLeft(t *testing.T) {
+	model, store := loadedModel(t)
+	model.entries = append(model.entries, domain.Entry{ID: 12, Title: "Third"})
+	model.SetMarkReadOnScroll(true)
+	model.active = articlesPane
+
+	model, cmd := update(t, model, key('G'))
+	if cmd == nil || model.entryCursor != 2 || !model.entries[0].Read ||
+		model.entries[1].Read || model.entries[2].Read {
+		t.Fatalf("jump result: cursor=%d entries=%#v cmd=%v", model.entryCursor, model.entries, cmd)
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.readIDs, []int64{10}) {
+		t.Fatalf("marked IDs = %v, want [10]", store.readIDs)
+	}
+}
+
+func TestReaderMarksReadOnlyAfterBottomAndReturn(t *testing.T) {
+	model, store := loadedModel(t)
+	model.entries[0].Text = strings.Repeat("long article line\n", 100)
+	model.active = articlesPane
+	model.height = 12
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if model.readerReachedBottom {
+		t.Fatal("long article opened at bottom")
+	}
+	model, cmd := update(t, model, key('h'))
+	if cmd != nil || len(store.readCalls) != 0 {
+		t.Fatal("returning before the bottom scheduled a write")
+	}
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model, _ = update(t, model, key('G'))
+	if !model.readerReachedBottom {
+		t.Fatal("reaching the bottom was not latched")
+	}
+	model, _ = update(t, model, key('k'))
+	if model.reader.AtBottom() || !model.readerReachedBottom {
+		t.Fatal("scrolling upward cleared the bottom latch")
+	}
+	model, cmd = update(t, model, key('h'))
+	if cmd == nil || !model.entries[0].Read || model.readerEntry == nil || !model.readerEntry.Read {
+		t.Fatal("returning after the bottom did not mark the article read")
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.readIDs, []int64{10}) {
+		t.Fatalf("marked IDs = %v, want [10]", store.readIDs)
+	}
+}
+
+func TestShiftTabMarksReadOnlyWhenItLeavesReader(t *testing.T) {
+	model, store := loadedModel(t)
+	model.active = articlesPane
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+
+	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+	if model.active != articlesPane || cmd == nil {
+		t.Fatalf("shift-tab did not leave reader and schedule read: active=%d cmd=%v", model.active, cmd)
+	}
+	_ = cmd()
+	if len(store.readCalls) != 1 {
+		t.Fatalf("read writes = %d, want 1", len(store.readCalls))
+	}
+}
+
+func TestShortReaderArticleStartsAtBottom(t *testing.T) {
+	model, store := loadedModel(t)
+	model.active = articlesPane
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if !model.readerReachedBottom {
+		t.Fatal("short article did not begin at the bottom")
+	}
+	model, cmd := update(t, model, key('h'))
+	if cmd == nil {
+		t.Fatal("returning from a short article did not schedule a read write")
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.readIDs, []int64{10}) {
+		t.Fatalf("marked IDs = %v, want [10]", store.readIDs)
+	}
+}
+
+func TestUnreadOnlyReloadPreservesSelectedArticle(t *testing.T) {
+	model, store := loadedModel(t)
+	store.persistRead = true
+	model.SetMarkReadOnScroll(true)
+	model.active = articlesPane
+	model.filter.UnreadOnly = true
+
+	model, writeCmd := update(t, model, key('j'))
+	model, loadCmd := update(t, model, writeCmd())
+	if loadCmd == nil {
+		t.Fatal("read completion did not reload counts and entries")
+	}
+	model, _ = update(t, model, loadCmd())
+	if len(model.entries) != 1 || model.entries[0].ID != 11 || model.entryCursor != 0 {
+		t.Fatalf("reloaded selection: cursor=%d entries=%#v", model.entryCursor, model.entries)
+	}
+}
+
+func TestHideReadSetsInitialFilterAndCanBeToggledForSession(t *testing.T) {
+	store := &fakeStore{
+		feeds: []domain.Feed{{ID: 1, Title: "Feed"}},
+		entries: []domain.Entry{
+			{ID: 10, FeedID: 1, Title: "Unread"},
+			{ID: 11, FeedID: 1, Title: "Read", Read: true},
+		},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model.SetHideRead(true)
+
+	loadCmd := model.Init()
+	model, _ = update(t, model, loadCmd())
+	if !store.lastFilter.UnreadOnly || len(model.entries) != 1 || model.entries[0].ID != 10 {
+		t.Fatalf("initial filter=%#v entries=%#v", store.lastFilter, model.entries)
+	}
+
+	model, loadCmd = update(t, model, key('u'))
+	if loadCmd == nil || model.filter.UnreadOnly || model.status != "Showing read articles" {
+		t.Fatalf("toggle result: filter=%#v status=%q cmd=%v", model.filter, model.status, loadCmd)
+	}
+	model, _ = update(t, model, loadCmd())
+	if store.lastFilter.UnreadOnly || len(model.entries) != 2 {
+		t.Fatalf("toggled filter=%#v entries=%#v", store.lastFilter, model.entries)
+	}
+}
+
+func TestReadPersistenceFailureReloadsAndDuplicateWritesAreSuppressed(t *testing.T) {
+	model, store := loadedModel(t)
+	store.readErr = errors.New("write failed")
+	model.SetMarkReadOnScroll(true)
+	model.active = articlesPane
+
+	model, writeCmd := update(t, model, key('j'))
+	if writeCmd == nil || !model.entries[0].Read {
+		t.Fatal("read state was not updated optimistically")
+	}
+	if duplicate := model.setRead(10, true); duplicate != nil {
+		t.Fatal("already-read entry scheduled a duplicate write")
+	}
+	model, loadCmd := update(t, model, writeCmd())
+	if loadCmd == nil || !model.errStatus || !strings.Contains(model.status, "write failed") {
+		t.Fatalf("failure status=%q error=%t cmd=%v", model.status, model.errStatus, loadCmd)
+	}
+	model, _ = update(t, model, loadCmd())
+	if model.entries[0].Read {
+		t.Fatal("reload after persistence failure did not restore stored read state")
+	}
+	if len(store.readCalls) != 1 {
+		t.Fatalf("read writes = %d, want 1", len(store.readCalls))
 	}
 }
 

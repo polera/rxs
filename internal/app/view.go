@@ -58,7 +58,7 @@ func (m Model) View() tea.View {
 	status := statusStyle.Render(truncate(statusText, max(1, m.width-2)))
 	keyText := "j/k move · ctrl+f/b page · gg/G start/end · h/l pane · enter read · r refresh · / filter · c colors · ? help"
 	if m.active == articlesPane {
-		keyText = "j/k move · gg/G start/end · h/l pane · enter read · r refresh · / search · c colors · ? help"
+		keyText = "j/k move · gg/G start/end · h/l pane · enter read · u show/hide read · / search · ? help"
 	} else if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · c colors · ? help"
 	}
@@ -168,7 +168,7 @@ func (m Model) overlayView() string {
 		content = "Are you sure you want to quit?\n\nPress y to quit or n to stay."
 	case helpOverlay:
 		title = "Help"
-		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of list or article\nctrl+f / ctrl+b page down / up in feeds or reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               filter feeds or search articles\nu               unread filter\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq               confirm quit\nesc             close dialog"
+		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of list or article\nctrl+f / ctrl+b page down / up in feeds or reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\nr / R           refresh selected / all\n/               filter feeds or search articles\nu               show / hide read articles\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq               confirm quit\nesc             close dialog"
 	case colorSchemeOverlay:
 		title = "Color scheme"
 		lines := make([]string, 0, len(m.schemeNames))
