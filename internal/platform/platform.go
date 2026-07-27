@@ -130,7 +130,8 @@ func saveConfig(path string, config Config) error {
 }
 
 func DataDir() (string, error) {
-	if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "linux", "freebsd":
 		if value := os.Getenv("XDG_DATA_HOME"); value != "" {
 			return filepath.Join(value, "rxs"), nil
 		}

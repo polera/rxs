@@ -9,8 +9,8 @@ import (
 )
 
 func TestDataDirUsesXDGDataHome(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("XDG data path is Linux-specific")
+	if runtime.GOOS != "linux" && runtime.GOOS != "freebsd" {
+		t.Skip("XDG data path is Linux- and FreeBSD-specific")
 	}
 	base := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", base)

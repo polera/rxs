@@ -21,7 +21,7 @@ go install github.com/polera/rxs/cmd/rxs@latest
 rxs
 ```
 
-Precompiled binaries for Linux, macOS, and Windows on amd64 and arm64 are also
+Precompiled binaries for Linux, macOS, Windows, and FreeBSD on amd64 and arm64 are also
 available from [GitHub Releases](https://github.com/polera/rxs/releases/latest).
 Download the archive for your platform, extract `rxs` (`rxs.exe` on Windows),
 and place it somewhere on your `PATH`. Each release includes `checksums.txt`
@@ -53,7 +53,7 @@ fetches the feed immediately and stores its articles for offline reading:
 rxs add https://example.com/feed.xml
 ```
 
-The database lives in the platform user-data directory by default (`$XDG_DATA_HOME/rxs/rxs.db` or `~/.local/share/rxs/rxs.db` on Linux). Pass `-db PATH` to use a different database. No configuration file is required.
+The database lives in the platform user-data directory by default (`$XDG_DATA_HOME/rxs/rxs.db` or `~/.local/share/rxs/rxs.db` on Linux and FreeBSD). Pass `-db PATH` to use a different database. No configuration file is required.
 
 ## Use
 
@@ -117,7 +117,7 @@ anything.
 
 ### Browser configuration
 
-Links and original articles open in the system browser by default. To use an interactive terminal browser, create `config.json` in the platform configuration directory (`$XDG_CONFIG_HOME/rxs/config.json` or `~/.config/rxs/config.json` on Linux):
+Links and original articles open in the system browser by default. To use an interactive terminal browser, create `config.json` in the platform configuration directory (`$XDG_CONFIG_HOME/rxs/config.json` or `~/.config/rxs/config.json` on Linux and FreeBSD):
 
 ```json
 {
@@ -164,5 +164,5 @@ go vet ./...
 
 Fixtures for RSS, Atom, and JSON Feed live in `testdata/feeds`. Database migrations are embedded from `internal/store/migrations`.
 
-Release workflows build Linux, macOS, and Windows binaries for amd64 and arm64,
+Release workflows build Linux, macOS, Windows, and FreeBSD binaries for amd64 and arm64,
 with CGO disabled.
