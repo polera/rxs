@@ -9,7 +9,7 @@
       <title>A calmer way to read the web</title>
       <link>https://example.com/local-first/calm-reading</link>
       <author>mara@example.com (Mara Bell)</author>
-      <pubDate>Tue, 21 Jul 2026 12:00:00 GMT</pubDate>
+      <pubDate>Mon, 27 Jul 2026 12:00:00 GMT</pubDate>
       <description><![CDATA[
         <p>The web is still at its best when it feels like a library: quiet, durable, and yours to explore.</p>
 
@@ -22,7 +22,38 @@
           <li>Star useful stories and return to them later.</li>
         </ul>
 
+        <h2>Make room for attention</h2>
+        <p>A reading queue should help you decide what deserves your time without demanding attention of its own. A focused interface keeps subscriptions, headlines, and the current story close without turning them into a dashboard.</p>
+
+        <p>Keyboard navigation makes that rhythm predictable. Filter the feed list, move through downloaded stories, and open one in a reader that gives the text the whole terminal.</p>
+
+        <h2>Own the quiet moments</h2>
+        <p>Local storage also makes the small moments useful. Articles remain ready on a commute, during a flight, or anywhere the network is unreliable. Reading progress stays with the article, so it is easy to leave and return later.</p>
+
+        <p>The result is deliberately modest: no account, no algorithmic timeline, and no pressure to keep scrolling. Just the writing you chose to follow.</p>
+
         <p>Feeds stay simple, portable, and available offline. <a href="https://example.com/local-first">Read more about local-first software</a>.</p>
+      ]]></description>
+    </item>
+    <item>
+      <guid isPermaLink="false">durable-queue</guid>
+      <title>Building a durable reading queue</title>
+      <link>https://example.com/local-first/durable-queue</link>
+      <author>mara@example.com (Mara Bell)</author>
+      <pubDate>Sun, 26 Jul 2026 15:30:00 GMT</pubDate>
+      <description><![CDATA[
+        <p>A useful reading queue is fast to search, easy to back up, and available without a network connection.</p>
+        <p>Keeping subscriptions and articles in SQLite makes those properties the default instead of an optional sync mode.</p>
+      ]]></description>
+    </item>
+    <item>
+      <guid isPermaLink="false">portable-subscriptions</guid>
+      <title>Your subscriptions should be portable</title>
+      <link>https://example.com/local-first/portable-subscriptions</link>
+      <author>mara@example.com (Mara Bell)</author>
+      <pubDate>Sat, 25 Jul 2026 09:00:00 GMT</pubDate>
+      <description><![CDATA[
+        <p>OPML keeps a list of feeds independent from any one reader. Export it, keep a copy, and take it wherever you read next.</p>
       ]]></description>
     </item>
   </channel>

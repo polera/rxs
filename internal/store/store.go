@@ -271,7 +271,8 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
 	query := `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title, e.author,
  e.published_at, e.updated_at, e.html, e.searchable_text,
- COALESCE(es.is_read, 0), COALESCE(es.is_starred, 0)
+ COALESCE(es.is_read, 0), COALESCE(es.is_starred, 0),
+ COALESCE(es.reading_progress, 0)
  FROM entries e JOIN feeds f ON f.id=e.feed_id
  LEFT JOIN entry_state es ON es.entry_id=e.id WHERE 1=1`
 	var args []any
@@ -308,7 +309,7 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 		var published, updated string
 		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.Identity,
 			&entry.URL, &entry.Title, &entry.Author, &published, &updated, &entry.HTML,
-			&entry.Text, &entry.Read, &entry.Starred); err != nil {
+			&entry.Text, &entry.Read, &entry.Starred, &entry.ReadingProgress); err != nil {
 			return nil, fmt.Errorf("scan entry: %w", err)
 		}
 		entry.PublishedAt, entry.UpdatedAt = parseTime(published), parseTime(updated)
@@ -326,6 +327,13 @@ func (s *Store) SetRead(ctx context.Context, id int64, read bool) error {
 func (s *Store) SetStarred(ctx context.Context, id int64, starred bool) error {
 	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_state(entry_id, is_starred)
  VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET is_starred=excluded.is_starred`, id, starred)
+	return stateUpdateResult(result, err)
+}
+
+func (s *Store) SetReadingProgress(ctx context.Context, id int64, progress float64) error {
+	progress = max(0, min(1, progress))
+	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_state(entry_id, reading_progress)
+ VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET reading_progress=excluded.reading_progress`, id, progress)
 	return stateUpdateResult(result, err)
 }
 

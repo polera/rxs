@@ -4,6 +4,10 @@
 
 ## Screenshots
 
+Navigate from the initial feed list through filtering, article selection, and the focused reader:
+
+![Navigating feeds and reading an article in rxs](assets/rxs-demo.gif)
+
 Browse feeds, articles, and a reading preview side by side:
 
 ![Browsing feeds and articles in rxs](assets/rxs-browse.png)
@@ -84,6 +88,10 @@ Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched
 | Esc | Close an input dialog |
 
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
+
+rxs saves each article's reading position when you leave the reader or confirm
+that you want to quit. Opening that article again resumes at the saved position,
+even after restarting rxs or using a different terminal size.
 
 ### Reading configuration
 

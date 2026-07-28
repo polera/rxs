@@ -74,6 +74,44 @@ func TestDeleteFeedCascades(t *testing.T) {
 	}
 }
 
+func TestReadingProgressPersistsAndIsClamped(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "rxs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := db.AddFeed(ctx, "https://example.com/feed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ApplyRefresh(ctx, source.ID, domain.ParsedFeed{
+		Entries: []domain.Entry{{Identity: "one", Title: "Article"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := db.Entries(ctx, domain.EntryFilter{})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries: %#v, err=%v", entries, err)
+	}
+
+	if err := db.SetReadingProgress(ctx, entries[0].ID, 0.42); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = db.Entries(ctx, domain.EntryFilter{})
+	if err != nil || entries[0].ReadingProgress != 0.42 {
+		t.Fatalf("saved progress = %v, err=%v", entries[0].ReadingProgress, err)
+	}
+
+	if err := db.SetReadingProgress(ctx, entries[0].ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = db.Entries(ctx, domain.EntryFilter{})
+	if err != nil || entries[0].ReadingProgress != 1 {
+		t.Fatalf("clamped progress = %v, err=%v", entries[0].ReadingProgress, err)
+	}
+}
+
 func TestAddExistingFeedReturnsTheExistingFeed(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(":memory:")

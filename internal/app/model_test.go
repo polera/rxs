@@ -16,14 +16,16 @@ import (
 )
 
 type fakeStore struct {
-	feeds       []domain.Feed
-	entries     []domain.Entry
-	readCalls   []bool
-	readIDs     []int64
-	starCalls   []bool
-	lastFilter  domain.EntryFilter
-	readErr     error
-	persistRead bool
+	feeds         []domain.Feed
+	entries       []domain.Entry
+	readCalls     []bool
+	readIDs       []int64
+	starCalls     []bool
+	lastFilter    domain.EntryFilter
+	readErr       error
+	persistRead   bool
+	progressCalls []float64
+	progressIDs   []int64
 }
 
 func (s *fakeStore) AddFeed(context.Context, string) (domain.Feed, error) {
@@ -61,6 +63,16 @@ func (s *fakeStore) SetRead(_ context.Context, id int64, value bool) error {
 }
 func (s *fakeStore) SetStarred(_ context.Context, _ int64, value bool) error {
 	s.starCalls = append(s.starCalls, value)
+	return nil
+}
+func (s *fakeStore) SetReadingProgress(_ context.Context, id int64, progress float64) error {
+	s.progressIDs = append(s.progressIDs, id)
+	s.progressCalls = append(s.progressCalls, progress)
+	for index := range s.entries {
+		if s.entries[index].ID == id {
+			s.entries[index].ReadingProgress = progress
+		}
+	}
 	return nil
 }
 
@@ -320,8 +332,12 @@ func TestEnteringReaderThroughPaneNavigationTracksArticleWithoutMarkingItImmedia
 			model.active, model.readerEntry, model.readerReachedBottom, cmd)
 	}
 	model, cmd = update(t, model, key('h'))
-	if cmd != nil || model.active != articlesPane || len(store.readCalls) != 0 {
+	if cmd == nil || model.active != articlesPane || len(store.readCalls) != 0 {
 		t.Fatalf("changing back: active=%d reads=%v cmd=%v", model.active, store.readCalls, cmd)
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.progressIDs, []int64{10}) {
+		t.Fatalf("progress writes: ids=%v", store.progressIDs)
 	}
 }
 
@@ -380,8 +396,12 @@ func TestReaderMarksReadOnlyAfterBottomAndReturn(t *testing.T) {
 		t.Fatal("long article opened at bottom")
 	}
 	model, cmd := update(t, model, key('h'))
-	if cmd != nil || len(store.readCalls) != 0 {
-		t.Fatal("returning before the bottom scheduled a write")
+	if cmd == nil || len(store.readCalls) != 0 {
+		t.Fatal("returning before the bottom did not schedule a progress-only write")
+	}
+	_ = cmd()
+	if len(store.readCalls) != 0 || !reflect.DeepEqual(store.progressIDs, []int64{10}) {
+		t.Fatalf("early return writes: progress=%v reads=%v", store.progressIDs, store.readIDs)
 	}
 
 	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
@@ -433,6 +453,38 @@ func TestShortReaderArticleStartsAtBottom(t *testing.T) {
 	_ = cmd()
 	if !reflect.DeepEqual(store.readIDs, []int64{10}) {
 		t.Fatalf("marked IDs = %v, want [10]", store.readIDs)
+	}
+}
+
+func TestReaderProgressIsSavedAndRestored(t *testing.T) {
+	model, store := loadedModel(t)
+	longText := strings.Repeat("long article line\n", 100)
+	model.entries[0].Text = longText
+	store.entries[0].Text = longText
+	model.active = articlesPane
+	model.height = 12
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model, _ = update(t, model, ctrlKey('f'))
+	savedOffset := model.reader.YOffset()
+	savedProgress := model.reader.ScrollPercent()
+	if savedOffset == 0 || savedProgress <= 0 || savedProgress >= 1 {
+		t.Fatalf("page down did not reach an intermediate position: offset=%d progress=%f", savedOffset, savedProgress)
+	}
+
+	model, cmd := update(t, model, key('h'))
+	if cmd == nil {
+		t.Fatal("leaving the reader did not schedule progress persistence")
+	}
+	_ = cmd()
+	if !reflect.DeepEqual(store.progressIDs, []int64{10}) ||
+		!reflect.DeepEqual(store.progressCalls, []float64{savedProgress}) {
+		t.Fatalf("progress writes: ids=%v values=%v", store.progressIDs, store.progressCalls)
+	}
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if got := model.reader.YOffset(); got != savedOffset {
+		t.Fatalf("restored offset = %d, want %d", got, savedOffset)
 	}
 }
 
@@ -771,6 +823,31 @@ func TestQuitRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestConfirmedQuitSavesOpenReaderProgress(t *testing.T) {
+	model, store := loadedModel(t)
+	model.entries[0].Text = strings.Repeat("long article line\n", 100)
+	model.active = articlesPane
+	model.height = 12
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model, _ = update(t, model, ctrlKey('f'))
+	wantProgress := model.reader.ScrollPercent()
+	model, _ = update(t, model, key('q'))
+	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("confirming quit returned no command")
+	}
+	if message := cmd(); message == nil {
+		t.Fatal("confirming quit returned no message")
+	} else if _, ok := message.(tea.QuitMsg); !ok {
+		t.Fatalf("confirming quit returned %T, want tea.QuitMsg", message)
+	}
+	if !reflect.DeepEqual(store.progressIDs, []int64{10}) ||
+		!reflect.DeepEqual(store.progressCalls, []float64{wantProgress}) {
+		t.Fatalf("quit progress writes: ids=%v values=%v", store.progressIDs, store.progressCalls)
+	}
+}
+
 func TestFeedFilterMatchesTitleAndURLAndCanBeCleared(t *testing.T) {
 	store := &fakeStore{
 		feeds: []domain.Feed{
@@ -933,6 +1010,43 @@ func TestReaderVimNavigation(t *testing.T) {
 	model, _ = update(t, model, key('g'))
 	if !model.reader.AtTop() {
 		t.Fatalf("gg offset = %d, want top", model.reader.YOffset())
+	}
+}
+
+func TestReaderFooterShowsAndUpdatesPercentageRead(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.entries[0].Text = strings.Repeat("line\n", 40)
+	model.active = articlesPane
+	model.height = 12
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	footer := strings.Split(ansi.Strip(model.View().Content), "\n")
+	if got := footer[len(footer)-1]; !strings.HasSuffix(got, "0% read") {
+		t.Fatalf("reader footer at top = %q, want 0%% read", got)
+	}
+
+	model, _ = update(t, model, ctrlKey('f'))
+	want := fmt.Sprintf("%.0f%% read", model.reader.ScrollPercent()*100)
+	footer = strings.Split(ansi.Strip(model.View().Content), "\n")
+	if got := footer[len(footer)-1]; !strings.HasSuffix(got, want) || want == "0% read" || want == "100% read" {
+		t.Fatalf("reader footer after page down = %q, want intermediate %q", got, want)
+	}
+
+	model, _ = update(t, model, key('G'))
+	footer = strings.Split(ansi.Strip(model.View().Content), "\n")
+	if got := footer[len(footer)-1]; !strings.HasSuffix(got, "100% read") {
+		t.Fatalf("reader footer at bottom = %q, want 100%% read", got)
+	}
+}
+
+func TestReaderFooterShowsFullyReadWhenArticleFits(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.active = articlesPane
+
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	footer := strings.Split(ansi.Strip(model.View().Content), "\n")
+	if got := footer[len(footer)-1]; !strings.HasSuffix(got, "100% read") {
+		t.Fatalf("short article footer = %q, want 100%% read", got)
 	}
 }
 

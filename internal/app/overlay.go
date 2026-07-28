@@ -18,7 +18,17 @@ func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.overlay == quitOverlay {
 		switch key {
 		case "y", "enter":
-			return m, tea.Quit
+			if m.active != readerPane || m.readerEntry == nil {
+				return m, tea.Quit
+			}
+			store := m.store
+			entryID := m.readerEntry.ID
+			progress := m.reader.ScrollPercent()
+			return m, func() tea.Msg {
+				// Complete the local SQLite write before Bubble Tea exits.
+				_ = store.SetReadingProgress(context.Background(), entryID, progress)
+				return tea.Quit()
+			}
 		case "n", "q", "esc", "ctrl+c":
 			m.closeOverlay()
 		}

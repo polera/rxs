@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -216,6 +217,11 @@ func (m *Model) resizeReader() {
 
 func (m Model) readerTextWidth() int {
 	return max(1, m.reader.Width()-m.reader.Style.GetHorizontalFrameSize())
+}
+
+func (m *Model) restoreReaderProgress(progress float64) {
+	maxOffset := max(0, m.reader.TotalLineCount()-m.reader.Height()+m.reader.Style.GetVerticalFrameSize())
+	m.reader.SetYOffset(int(math.Round(float64(maxOffset) * max(0, min(1, progress)))))
 }
 
 func (m *Model) checkReaderReachedBottom() {

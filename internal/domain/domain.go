@@ -31,6 +31,8 @@ type Entry struct {
 	Text        string
 	Read        bool
 	Starred     bool
+	// ReadingProgress is the last saved position in the article, from 0 to 1.
+	ReadingProgress float64
 }
 
 // EntryFilter describes the local article list. FeedID zero means all feeds.

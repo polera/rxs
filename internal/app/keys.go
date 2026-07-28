@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -330,6 +331,7 @@ func (m Model) enterReader() (tea.Model, tea.Cmd) {
 	m.reader.GotoTop()
 	m.active = readerPane
 	m.resizeReader()
+	m.restoreReaderProgress(opened.ReadingProgress)
 	m.checkReaderReachedBottom()
 	return m, nil
 }
@@ -393,12 +395,38 @@ func (m *Model) leaveReader() tea.Cmd {
 	}
 	reachedBottom := m.readerReachedBottom
 	entry := m.readerEntry
+	progress := m.reader.ScrollPercent()
+	if entry != nil {
+		entry.ReadingProgress = progress
+		for index := range m.entries {
+			if m.entries[index].ID == entry.ID {
+				m.entries[index].ReadingProgress = progress
+				break
+			}
+		}
+	}
 	m.active = articlesPane
 	m.resizeReader()
-	if !reachedBottom || entry == nil {
+	if entry == nil {
 		return nil
 	}
-	return m.setRead(entry.ID, true)
+	readCmd := tea.Cmd(nil)
+	if reachedBottom {
+		readCmd = m.setRead(entry.ID, true)
+	}
+	store := m.store
+	if readCmd == nil {
+		return func() tea.Msg {
+			return readingProgressMsg{
+				err: store.SetReadingProgress(context.Background(), entry.ID, progress),
+			}
+		}
+	}
+	return func() tea.Msg {
+		progressErr := store.SetReadingProgress(context.Background(), entry.ID, progress)
+		readMsg, _ := readCmd().(stateMsg)
+		return stateMsg{err: errors.Join(progressErr, readMsg.err)}
+	}
 }
 
 func (m Model) toggleStarred() (tea.Model, tea.Cmd) {

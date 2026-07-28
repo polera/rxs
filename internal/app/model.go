@@ -22,6 +22,7 @@ type Store interface {
 	Entries(context.Context, domain.EntryFilter) ([]domain.Entry, error)
 	SetRead(context.Context, int64, bool) error
 	SetStarred(context.Context, int64, bool) error
+	SetReadingProgress(context.Context, int64, float64) error
 }
 
 type Refresher interface {
@@ -123,6 +124,7 @@ type addMsg struct {
 }
 type deleteMsg struct{ err error }
 type stateMsg struct{ err error }
+type readingProgressMsg struct{ err error }
 type refreshMsg struct{ results []domain.RefreshResult }
 type browserMsg struct {
 	target string
@@ -256,6 +258,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(msg.err)
 		}
 		return m, m.loadCmdPreserving(m.selectedEntryID())
+	case readingProgressMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		}
+		return m, nil
 	case refreshMsg:
 		m.busy = false
 		failures, added := 0, 0

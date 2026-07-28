@@ -62,10 +62,27 @@ func (m Model) View() tea.View {
 	} else if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · h articles · c colors · ? help"
 	}
-	keys := m.styles.Dim.Render(truncate(keyText, max(1, m.width-2)))
+	keys := m.styles.Dim.Render(m.footerText(keyText))
 	view := m.newView(body + "\n" + status + "\n" + keys)
 	view.AltScreen = true
 	return view
+}
+
+func (m Model) footerText(keyText string) string {
+	width := max(1, m.width-2)
+	if m.active != readerPane {
+		return truncate(keyText, width)
+	}
+
+	progress := fmt.Sprintf("%.0f%% read", m.reader.ScrollPercent()*100)
+	progressWidth := utf8.RuneCountInString(progress)
+	if width <= progressWidth {
+		return truncate(progress, width)
+	}
+
+	keys := truncate(keyText, width-progressWidth-1)
+	padding := width - utf8.RuneCountInString(keys) - progressWidth
+	return keys + strings.Repeat(" ", padding) + progress
 }
 
 func (m Model) newView(content string) tea.View {
