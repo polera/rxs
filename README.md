@@ -1,4 +1,10 @@
-# rxs
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-full-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-full.svg">
+    <img alt="rxs — feed reader" src="assets/logo-full.svg" width="320">
+  </picture>
+</h1>
 
 `rxs` is a local-first, keyboard-driven RSS, Atom, and JSON Feed reader for the terminal. It stores downloaded articles in SQLite, starts without an account, and remains useful offline.
 

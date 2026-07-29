@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 200" width="100%" height="100%">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@600;700;800&amp;display=swap');
+      .plex-stacked { font-family: 'IBM Plex Mono', SFMono-Regular, monospace; }
+    </style>
+  </defs>
+
+  <!-- Centered Icon Mark with full 'rxs' -->
+  <g transform="translate(72, 16)">
+    <rect width="96" height="96" rx="21" fill="#2f2738" />
+    <path fill="#f7f5f0" d="M 81 81 h -11 a 57 57 0 0 0 -57 -57 V 13 a 68 68 0 0 1 68 68 z" />
+    <path fill="#f7f5f0" opacity="0.88" d="M 63 81 h -11 a 39 39 0 0 0 -39 -39 V 31 a 50 50 0 0 1 50 50 z" />
+    <text x="8" y="79" class="plex-stacked" font-size="22" font-weight="800" letter-spacing="-1.5" fill="#f7f5f0">r<tspan fill="#9b7ac4">x</tspan>s</text>
+  </g>
+
+  <!-- Typography: rxs -->
+  <text x="120" y="156" class="plex-stacked" text-anchor="middle" font-size="44" font-weight="800" letter-spacing="-3">
+    <tspan fill="#2f2738">r</tspan><tspan fill="#7b5aa6">x</tspan><tspan fill="#2f2738">s</tspan>
+  </text>
+
+  <!-- Subtitle -->
+  <text x="120" y="178" class="plex-stacked" text-anchor="middle" font-size="10" font-weight="700" letter-spacing="2.5" fill="#6f6875">
+    TERMINAL FEED READER
+  </text>
+</svg>
