@@ -11,6 +11,9 @@ Set Padding 24
 Set Theme "nord"
 Set TypingSpeed 35ms
 Set Framerate 20
+Env NO_COLOR ""
+Env TERM "xterm-256color"
+Env COLORTERM "truecolor"
 
 Hide
 Type `demo_dir="$(mktemp -d /tmp/rxs-vhs-demo.XXXXXX)"` Enter

@@ -8,6 +8,9 @@ Set Height 900
 Set Padding 24
 Set Theme "nord"
 Set TypingSpeed 20ms
+Env NO_COLOR ""
+Env TERM "xterm-256color"
+Env COLORTERM "truecolor"
 
 Hide
 Type `demo_dir="$(mktemp -d /tmp/rxs-vhs-reader.XXXXXX)"` Enter
