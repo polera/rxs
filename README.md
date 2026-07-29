@@ -147,8 +147,10 @@ Links and original articles open in the system browser by default. To use an int
 
 ### Color schemes
 
-The terminal interface includes `default`, `dracula`, `gruvbox-dark`, `nord`,
-`solarized-dark`, and `solarized-light`. Select one in the same `config.json`:
+The terminal interface includes `default`, `catppuccin-latte`,
+`catppuccin-mocha`, `dracula`, `gruvbox-dark`, `gruvbox-light`, `high-contrast`,
+`nord`, `solarized-dark`, `solarized-light`, and `tokyo-night`. Select one in the
+same `config.json`:
 
 ```json
 {
@@ -163,7 +165,9 @@ appearance configuration uses `default`, which preserves the original terminal
 colors. Press `c` in the interface and use `j` / `k` (or the arrow keys) to
 preview the built-in schemes live. Enter applies the choice and writes it to the
 active configuration file; Esc restores the previous scheme. The foreground and
-background are both set for named schemes so light schemes remain readable. Use
+background are both set for named schemes so light schemes remain readable.
+`catppuccin-latte`, `gruvbox-light`, and `solarized-light` suit light terminals;
+`high-contrast` is a black-and-white scheme whose colors clear WCAG AA. Use
 `-config PATH` to load and persist the setting in another file.
 
 Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional.

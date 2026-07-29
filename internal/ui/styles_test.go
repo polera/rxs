@@ -9,7 +9,19 @@ import (
 )
 
 func TestResolveBuiltInSchemes(t *testing.T) {
-	want := []string{"default", "dracula", "gruvbox-dark", "nord", "solarized-dark", "solarized-light"}
+	want := []string{
+		"catppuccin-latte",
+		"catppuccin-mocha",
+		"default",
+		"dracula",
+		"gruvbox-dark",
+		"gruvbox-light",
+		"high-contrast",
+		"nord",
+		"solarized-dark",
+		"solarized-light",
+		"tokyo-night",
+	}
 	if got := strings.Join(SchemeNames(), ","); got != strings.Join(want, ",") {
 		t.Fatalf("SchemeNames() = %q, want %q", got, strings.Join(want, ","))
 	}
