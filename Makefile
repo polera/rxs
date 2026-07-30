@@ -2,12 +2,15 @@ BINARY := rxs
 PKG := ./cmd/rxs
 GOBIN := $(shell go env GOPATH)/bin
 
-.PHONY: all build test checks staticcheck osv-scanner gosec install-tools clean
+.PHONY: all build licenses test checks staticcheck osv-scanner gosec install-tools clean
 
 all: build
 
 build:
 	go build -o $(BINARY) $(PKG)
+
+licenses: build
+	./scripts/gen-licenses.sh $(BINARY) THIRD_PARTY_LICENSES.txt
 
 test:
 	go test ./...
@@ -32,5 +35,5 @@ install-tools:
 		(echo "installing gosec..." && go install github.com/securego/gosec/v2/cmd/gosec@latest)
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) THIRD_PARTY_LICENSES.txt
 	go clean -testcache

@@ -184,3 +184,18 @@ Fixtures for RSS, Atom, and JSON Feed live in `testdata/feeds`. Database migrati
 
 Release workflows build Linux, macOS, Windows, and FreeBSD binaries for amd64 and arm64,
 with CGO disabled.
+
+## License
+
+rxs is released under the [MIT license](LICENSE).
+
+Every dependency is MIT or BSD-3-Clause; both are permissive and impose no
+conditions beyond attribution. Release archives ship a `THIRD_PARTY_LICENSES.txt`
+listing each linked module with its full license text. To regenerate it locally:
+
+```sh
+make licenses
+```
+
+The set of linked modules differs by platform, so the file is generated per build
+target from the compiled binary rather than checked in.

@@ -1,5 +1,6 @@
 /rxs
 /dist/
+/THIRD_PARTY_LICENSES.txt
 *.db
 *.db-shm
 *.db-wal

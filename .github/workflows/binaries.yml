@@ -89,6 +89,21 @@ jobs:
             -o "dist/package/$binary" \
             ./cmd/rxs
 
+      - name: Collect third-party licenses
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          binary="rxs"
+          if [ "$GOOS" = "windows" ]; then
+            binary="rxs.exe"
+          fi
+
+          cp LICENSE dist/package/LICENSE
+          ./scripts/gen-licenses.sh \
+            "dist/package/$binary" \
+            dist/package/THIRD_PARTY_LICENSES.txt
+
       - name: Package binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -96,9 +111,9 @@ jobs:
         run: |
           archive="rxs_${GOOS}_${GOARCH}"
           if [ "$GOOS" = "windows" ]; then
-            (cd dist/package && zip "../${archive}.zip" rxs.exe)
+            (cd dist/package && zip "../${archive}.zip" rxs.exe LICENSE THIRD_PARTY_LICENSES.txt)
           else
-            tar -C dist/package -czf "dist/${archive}.tar.gz" rxs
+            tar -C dist/package -czf "dist/${archive}.tar.gz" rxs LICENSE THIRD_PARTY_LICENSES.txt
           fi
 
       - name: Upload binary
