@@ -10,7 +10,17 @@ import (
 	"github.com/polera/rxs/internal/ui"
 )
 
-func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
+	msg, isKeyPress := message.(tea.KeyPressMsg)
+	if !isKeyPress {
+		if isInputOverlay(m.overlay) {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(message)
+			return m, cmd
+		}
+		return m, nil
+	}
+
 	key := msg.String()
 	if m.overlay == colorSchemeOverlay {
 		return m.updateColorSchemeChooser(key)
@@ -114,6 +124,15 @@ func (m Model) updateOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func isInputOverlay(mode overlay) bool {
+	switch mode {
+	case addOverlay, searchOverlay, feedFilterOverlay, readerSearchOverlay, importOverlay, exportOverlay:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) openColorSchemeChooser() (tea.Model, tea.Cmd) {

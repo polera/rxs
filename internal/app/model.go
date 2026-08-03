@@ -318,6 +318,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateKey(msg)
 	}
+	if m.overlay != noOverlay {
+		return m.updateOverlay(message)
+	}
 	if m.active == readerPane {
 		var cmd tea.Cmd
 		m.reader, cmd = m.reader.Update(message)

@@ -18,6 +18,9 @@ import (
 type fakeStore struct {
 	feeds         []domain.Feed
 	entries       []domain.Entry
+	addURLs       []string
+	addFeed       domain.Feed
+	addErr        error
 	readCalls     []bool
 	readIDs       []int64
 	starCalls     []bool
@@ -28,8 +31,9 @@ type fakeStore struct {
 	progressIDs   []int64
 }
 
-func (s *fakeStore) AddFeed(context.Context, string) (domain.Feed, error) {
-	return domain.Feed{}, errors.New("not implemented")
+func (s *fakeStore) AddFeed(_ context.Context, rawURL string) (domain.Feed, error) {
+	s.addURLs = append(s.addURLs, rawURL)
+	return s.addFeed, s.addErr
 }
 func (s *fakeStore) DeleteFeed(context.Context, int64) error { return nil }
 func (s *fakeStore) Feeds(context.Context) ([]domain.Feed, error) {
@@ -790,6 +794,84 @@ func TestQCanBeTypedInInput(t *testing.T) {
 	model, _ = update(t, model, key('q'))
 	if model.overlay != addOverlay || model.input.Value() != "q" {
 		t.Fatalf("q should remain in input: overlay=%v value=%q", model.overlay, model.input.Value())
+	}
+}
+
+func TestPasteIntoInputOverlays(t *testing.T) {
+	tests := []struct {
+		name string
+		mode overlay
+	}{
+		{name: "add feed", mode: addOverlay},
+		{name: "article search", mode: searchOverlay},
+		{name: "feed filter", mode: feedFilterOverlay},
+		{name: "reader search", mode: readerSearchOverlay},
+		{name: "OPML import", mode: importOverlay},
+		{name: "OPML export", mode: exportOverlay},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model, _ := loadedModel(t)
+			next, _ := model.openInput(tt.mode, "Input", "value")
+			model = next.(Model)
+			model.input.SetValue("leftright")
+			model.input.SetCursor(len("left"))
+
+			model, _ = update(t, model, tea.PasteMsg{Content: "feed\nurl\tvalue"})
+
+			if model.overlay != tt.mode {
+				t.Fatalf("paste closed overlay %v", model.overlay)
+			}
+			if got, want := model.input.Value(), "leftfeed url valueright"; got != want {
+				t.Fatalf("pasted value = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestPasteIsIgnoredOutsideInputOverlays(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.input.SetValue("unchanged")
+	model.overlay = helpOverlay
+
+	model, cmd := update(t, model, tea.PasteMsg{Content: "pasted"})
+
+	if cmd != nil || model.overlay != helpOverlay || model.input.Value() != "unchanged" {
+		t.Fatalf("paste changed non-input overlay: overlay=%v value=%q cmd=%v", model.overlay, model.input.Value(), cmd)
+	}
+}
+
+func TestPastedFeedURLCanBeSubmitted(t *testing.T) {
+	model, store := loadedModel(t)
+	store.addFeed = domain.Feed{ID: 42, Title: "Pasted Feed"}
+	model, _ = update(t, model, key('a'))
+	model, _ = update(t, model, tea.PasteMsg{Content: "  https://example.test/feed.xml\n"})
+
+	model, cmd := update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	if cmd == nil {
+		t.Fatal("submitting a pasted feed URL returned no command")
+	}
+	if model.overlay != noOverlay || !model.busy {
+		t.Fatalf("submitted model: overlay=%v busy=%t", model.overlay, model.busy)
+	}
+
+	message := cmd()
+	if !reflect.DeepEqual(store.addURLs, []string{"https://example.test/feed.xml"}) {
+		t.Fatalf("AddFeed URLs = %q", store.addURLs)
+	}
+	if added, ok := message.(addMsg); !ok || added.feed.ID != 42 || added.err != nil {
+		t.Fatalf("add command returned %#v", message)
+	}
+}
+
+func TestCtrlVPasteStartsClipboardCommand(t *testing.T) {
+	model, _ := loadedModel(t)
+	model, _ = update(t, model, key('a'))
+
+	_, cmd := update(t, model, ctrlKey('v'))
+	if cmd == nil {
+		t.Fatal("ctrl+v returned no clipboard command")
 	}
 }
 

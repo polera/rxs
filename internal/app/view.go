@@ -204,7 +204,7 @@ func (m Model) overlayView() string {
 		}
 	default:
 		title = "Input"
-		content = m.input.View() + "\n\nEnter to confirm · Esc to cancel"
+		content = m.input.View() + "\n\nEnter to confirm · Esc to cancel · Paste with terminal shortcut"
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.styles.Scheme.Accent).
 		Padding(1, 2).Width(max(20, min(76, m.width-6))).Render(m.styles.Selected.Render(title) + "\n\n" + content)
