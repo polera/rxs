@@ -44,15 +44,26 @@ func (m Model) loadCmd() tea.Cmd {
 	return m.loadCmdPreserving(0)
 }
 
+func (m Model) initialLoadCmd() tea.Cmd {
+	return m.loadCmdWithOptions(0, true)
+}
+
 func (m Model) loadCmdPreserving(entryID int64) tea.Cmd {
+	return m.loadCmdWithOptions(entryID, false)
+}
+
+func (m Model) loadCmdWithOptions(entryID int64, initial bool) tea.Cmd {
 	filter := m.filter
 	return func() tea.Msg {
 		feeds, err := m.store.Feeds(context.Background())
 		if err != nil {
-			return loadedMsg{filter: filter, entryID: entryID, err: err}
+			return loadedMsg{filter: filter, entryID: entryID, initial: initial, err: err}
 		}
 		entries, err := m.store.Entries(context.Background(), filter)
-		return loadedMsg{feeds: feeds, entries: entries, filter: filter, entryID: entryID, err: err}
+		return loadedMsg{
+			feeds: feeds, entries: entries, filter: filter, entryID: entryID,
+			initial: initial, err: err,
+		}
 	}
 }
 

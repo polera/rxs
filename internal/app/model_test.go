@@ -89,6 +89,23 @@ func (fakeRefresher) RefreshAll(context.Context, []domain.Feed, int) []domain.Re
 	return nil
 }
 
+type recordingRefresher struct {
+	feeds   []domain.Feed
+	workers int
+	calls   int
+}
+
+func (r *recordingRefresher) Refresh(context.Context, int64) domain.RefreshResult {
+	return domain.RefreshResult{}
+}
+
+func (r *recordingRefresher) RefreshAll(_ context.Context, feeds []domain.Feed, workers int) []domain.RefreshResult {
+	r.calls++
+	r.feeds = append([]domain.Feed(nil), feeds...)
+	r.workers = workers
+	return []domain.RefreshResult{{FeedID: feeds[0].ID, Added: 2}}
+}
+
 func key(value rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: value, Text: string(value)})
 }
@@ -126,6 +143,35 @@ func loadedModel(t *testing.T) (Model, *fakeStore) {
 		t.Fatal("loading unexpectedly returned a command")
 	}
 	return model, store
+}
+
+func TestInitRefreshesFeedsAfterInitialLoad(t *testing.T) {
+	store := &fakeStore{
+		feeds: []domain.Feed{
+			{ID: 1, Title: "First"},
+			{ID: 2, Title: "Second"},
+		},
+	}
+	refresher := &recordingRefresher{}
+	model := New(store, refresher, func(string) error { return nil })
+
+	model, refreshCmd := update(t, model, model.Init()())
+	if refreshCmd == nil || !model.busy || model.status != "Refreshing 2 feed(s)…" {
+		t.Fatalf("initial load: status=%q busy=%t cmd=%v", model.status, model.busy, refreshCmd)
+	}
+
+	model, reloadCmd := update(t, model, refreshCmd())
+	if refresher.calls != 1 || refresher.workers != 4 || !reflect.DeepEqual(refresher.feeds, store.feeds) {
+		t.Fatalf("refresh: calls=%d workers=%d feeds=%#v", refresher.calls, refresher.workers, refresher.feeds)
+	}
+	if reloadCmd == nil || model.busy || model.status != "Refresh finished: 2 new article(s)" {
+		t.Fatalf("refresh result: status=%q busy=%t cmd=%v", model.status, model.busy, reloadCmd)
+	}
+
+	model, nextCmd := update(t, model, reloadCmd())
+	if nextCmd != nil || refresher.calls != 1 {
+		t.Fatalf("reload scheduled another refresh: calls=%d cmd=%v", refresher.calls, nextCmd)
+	}
 }
 
 func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {

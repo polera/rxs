@@ -116,6 +116,7 @@ type loadedMsg struct {
 	entries []domain.Entry
 	filter  domain.EntryFilter
 	entryID int64
+	initial bool
 	err     error
 }
 type addMsg struct {
@@ -203,7 +204,7 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 	return model
 }
 
-func (m Model) Init() tea.Cmd { return m.loadCmd() }
+func (m Model) Init() tea.Cmd { return m.initialLoadCmd() }
 
 func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
@@ -230,6 +231,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncReader()
 		if m.status == "Loading subscriptions…" || m.status == "Loading articles…" {
 			m.status, m.errStatus = "Ready", false
+		}
+		if msg.initial {
+			return m.refreshAll()
 		}
 		return m, nil
 	case addMsg:
