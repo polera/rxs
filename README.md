@@ -6,7 +6,11 @@
   </picture>
 </h1>
 
-`rxs` is a local-first, keyboard-driven RSS, Atom, and JSON Feed reader for the terminal. It stores downloaded articles in SQLite, starts without an account, and remains useful offline.
+`rxs` is a local-first, keyboard-driven RSS, Atom, and JSON Feed reader for the
+terminal. It stores downloaded articles in SQLite, starts without an account,
+and remains useful offline. On launch it shows the saved library immediately,
+refreshes subscriptions automatically, and can optionally retrieve readable
+full text when a feed contains only a summary.
 
 ## Screenshots
 
@@ -67,7 +71,15 @@ The database lives in the platform user-data directory by default (`$XDG_DATA_HO
 
 ## Use
 
-Press `a`, enter an HTTP or HTTPS feed URL, and press Enter. The feed is fetched immediately. Downloaded article text is searchable and available after the network goes away.
+Press `a`, type or paste an HTTP or HTTPS feed URL with your terminal's paste
+shortcut, and press Enter. The feed is fetched immediately. Downloaded article
+text is searchable and available after the network goes away.
+
+Each time the interactive UI starts, rxs loads saved subscriptions and articles
+first, then refreshes every feed automatically. The refresh runs concurrently
+and reports new articles, full-text expansions, and per-feed failures in the
+status line without interrupting navigation. Use `r` or `R` for an additional
+refresh at any time.
 
 | Key | Action |
 | --- | --- |
@@ -146,9 +158,10 @@ contain only a summary or truncation, enable automatic downloads in
 This setting applies to both the interactive reader and `rxs add`. In `auto`
 mode, rxs makes an additional request to an article's linked page only when the
 feed copy looks partial, then stores readable full text as a separate overlay
-for offline reading and search. Complete feed entries do not cause an article
-request, and failed downloads leave the feed-provided content intact. Attempts
-are retried only after the item's URL, feed content, or update time changes.
+for offline reading and search. The reader marks enriched entries as `full text`.
+Complete feed entries do not cause an article request, and failed downloads
+leave the feed-provided content intact. Attempts are retried only after the
+item's URL, feed content, or update time changes.
 
 Enrichment processes static HTML only. It does not run JavaScript, retain
 cookies, send URL credentials, or bypass authentication and paywalls. Private,
