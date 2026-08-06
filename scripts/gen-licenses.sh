@@ -19,9 +19,15 @@ fi
 
 binary="$1"
 out="${2:-THIRD_PARTY_LICENSES.txt}"
+policy="${LICENSE_POLICY:-licenses/approved-modules.txt}"
 
 if [ ! -f "$binary" ]; then
 	echo "error: no such binary: $binary" >&2
+	exit 1
+fi
+
+if [ ! -f "$policy" ]; then
+	echo "error: license policy not found: $policy" >&2
 	exit 1
 fi
 
@@ -53,6 +59,23 @@ while IFS='	' read -r path version dir; do
 	[ -n "$path" ] || continue
 	[ "$path" = "$main_module" ] && continue
 
+	module="$path@$version"
+	license_expression="$(
+		awk -v module="$module" '
+			$1 == module {
+				$1 = ""
+				sub(/^[[:space:]]+/, "")
+				print
+				found = 1
+			}
+			END { if (!found) exit 1 }
+		' "$policy"
+	)" || {
+		echo "error: $module has not been reviewed in $policy" >&2
+		missing=1
+		continue
+	}
+
 	if [ -z "$dir" ] || [ ! -d "$dir" ]; then
 		echo "error: $path $version is not extracted; run 'go mod download $path'" >&2
 		missing=1
@@ -73,6 +96,7 @@ while IFS='	' read -r path version dir; do
 		echo
 		echo "================================================================================"
 		echo "$path $version"
+		echo "SPDX-License-Identifier: $license_expression"
 		echo "================================================================================"
 		while IFS= read -r f; do
 			echo

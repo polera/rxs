@@ -230,9 +230,14 @@ with CGO disabled.
 
 rxs is released under the [MIT license](LICENSE).
 
-Every dependency is MIT or BSD-3-Clause; both are permissive and impose no
-conditions beyond attribution. Release archives ship a `THIRD_PARTY_LICENSES.txt`
-listing each linked module with its full license text. To regenerate it locally:
+Every declared dependency version has been reviewed as permissively licensed
+and compatible with distributing rxs under MIT. The version-pinned review is
+recorded in [`licenses/approved-modules.txt`](licenses/approved-modules.txt).
+Running `make license-check` fails when `go.mod` and that policy differ.
+
+Release archives ship a `THIRD_PARTY_LICENSES.txt` listing each linked module,
+its reviewed SPDX license expression, and its complete module-level license and
+notice files. To regenerate it locally:
 
 ```sh
 make licenses

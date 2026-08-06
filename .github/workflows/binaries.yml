@@ -38,6 +38,9 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Check dependency licenses
+        run: make license-check
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: test

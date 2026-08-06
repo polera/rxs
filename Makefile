@@ -2,20 +2,23 @@ BINARY := rxs
 PKG := ./cmd/rxs
 GOBIN := $(shell go env GOPATH)/bin
 
-.PHONY: all build licenses test checks staticcheck osv-scanner gosec install-tools clean
+.PHONY: all build license-check licenses test checks staticcheck osv-scanner gosec install-tools clean
 
 all: build
 
 build:
 	go build -o $(BINARY) $(PKG)
 
-licenses: build
+license-check:
+	./scripts/check-licenses.sh
+
+licenses: license-check build
 	./scripts/gen-licenses.sh $(BINARY) THIRD_PARTY_LICENSES.txt
 
 test:
 	go test ./...
 
-checks: staticcheck osv-scanner gosec
+checks: license-check staticcheck osv-scanner gosec
 
 staticcheck: install-tools
 	$(GOBIN)/staticcheck ./...
