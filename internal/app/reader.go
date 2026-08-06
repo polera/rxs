@@ -37,7 +37,11 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 	if date.IsZero() {
 		date = entry.UpdatedAt
 	}
-	meta := strings.Trim(strings.Join([]string{entry.Author, relativeTime(date), entry.FeedTitle}, " · "), " ·")
+	metadata := []string{entry.Author, relativeTime(date), entry.FeedTitle}
+	if entry.ContentSource == domain.ContentSourceFullArticle {
+		metadata = append(metadata, "full text")
+	}
+	meta := strings.Trim(strings.Join(metadata, " · "), " ·")
 	content := entry.Text
 	if content == "" {
 		content = "This feed did not include article content. Press o to open the original."

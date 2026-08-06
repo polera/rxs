@@ -174,6 +174,28 @@ func TestInitRefreshesFeedsAfterInitialLoad(t *testing.T) {
 	}
 }
 
+func TestRefreshStatusIncludesFullTextResults(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.busy = true
+	model, cmd := update(t, model, refreshMsg{results: []domain.RefreshResult{{
+		Added: 3, Expanded: 2, ExpansionFailed: 1,
+	}}})
+	if cmd == nil || model.busy || model.errStatus ||
+		model.status != "Refresh finished: 3 new, 2 expanded, 1 full-text fetch unavailable" {
+		t.Fatalf("refresh status = %q, error=%t, busy=%t, cmd=%v", model.status, model.errStatus, model.busy, cmd)
+	}
+}
+
+func TestReaderMarksEnrichedContentAsFullText(t *testing.T) {
+	model, _ := loadedModel(t)
+	entry := model.entries[0]
+	entry.ContentSource = domain.ContentSourceFullArticle
+	model.setReaderContent(entry)
+	if content := model.reader.GetContent(); !strings.Contains(content, "full text") {
+		t.Fatalf("reader content has no full-text marker: %q", content)
+	}
+}
+
 func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {
 	styles, err := ui.ResolveScheme("solarized-light")
 	if err != nil {

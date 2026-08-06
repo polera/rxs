@@ -29,8 +29,13 @@ type Entry struct {
 	UpdatedAt   time.Time
 	HTML        string
 	Text        string
-	Read        bool
-	Starred     bool
+	// ContentSource identifies whether HTML and Text came from the feed or a
+	// separately downloaded full-article overlay.
+	ContentSource string
+	// EnrichmentInputHash is populated only for pending enrichment work.
+	EnrichmentInputHash string
+	Read                bool
+	Starred             bool
 	// ReadingProgress is the last saved position in the article, from 0 to 1.
 	ReadingProgress float64
 }
@@ -56,8 +61,15 @@ type ParsedFeed struct {
 
 // RefreshResult is delivered to the UI after one refresh attempt.
 type RefreshResult struct {
-	FeedID int64
-	Title  string
-	Added  int
-	Err    error
+	FeedID          int64
+	Title           string
+	Added           int
+	Expanded        int
+	ExpansionFailed int
+	Err             error
 }
+
+const (
+	ContentSourceFeed        = "feed"
+	ContentSourceFullArticle = "full_article"
+)

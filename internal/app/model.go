@@ -269,18 +269,27 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case refreshMsg:
 		m.busy = false
-		failures, added := 0, 0
+		failures, added, expanded, expansionFailures := 0, 0, 0, 0
 		var lastErr error
 		for _, result := range msg.results {
 			added += result.Added
+			expanded += result.Expanded
+			expansionFailures += result.ExpansionFailed
 			if result.Err != nil {
 				failures++
 				lastErr = result.Err
 			}
 		}
 		if failures > 0 {
-			m.status = fmt.Sprintf("Refresh finished: %d new, %d failed: %v", added, failures, lastErr)
+			if expanded > 0 || expansionFailures > 0 {
+				m.status = fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable, %d feed(s) failed: %v", added, expanded, expansionFailures, failures, lastErr)
+			} else {
+				m.status = fmt.Sprintf("Refresh finished: %d new, %d failed: %v", added, failures, lastErr)
+			}
 			m.errStatus = true
+		} else if expanded > 0 || expansionFailures > 0 {
+			m.status = fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable", added, expanded, expansionFailures)
+			m.errStatus = false
 		} else {
 			m.status = fmt.Sprintf("Refresh finished: %d new article(s)", added)
 			m.errStatus = false

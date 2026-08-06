@@ -57,6 +57,22 @@ func TestAddSubcommandRequiresExactlyOneURL(t *testing.T) {
 	}
 }
 
+func TestAddSubcommandLoadsContentConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	dbPath := filepath.Join(dir, "data", "rxs.db")
+	if err := os.WriteFile(configPath, []byte(`{"content":{"full_articles":"always"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := runArgs([]string{"add", "-config", configPath, "-db", dbPath, "https://example.test/feed"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "full_articles") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Dir(dbPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("database directory was created before config validation: %v", statErr)
+	}
+}
+
 func TestUnknownSubcommandIsRejected(t *testing.T) {
 	err := runArgs([]string{"remove"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), `unknown command "remove"`) {

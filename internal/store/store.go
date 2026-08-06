@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/polera/rxs/internal/article"
 	"github.com/polera/rxs/internal/domain"
 	_ "modernc.org/sqlite"
 )
@@ -233,7 +234,7 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 	}
 	added := 0
 	for _, entry := range parsed.Entries {
-		result, err := tx.ExecContext(ctx, `INSERT INTO entries
+		_, err := tx.ExecContext(ctx, `INSERT INTO entries
  (feed_id, identity, url, title, author, published_at, updated_at, html, searchable_text)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
  ON CONFLICT(feed_id, identity) DO UPDATE SET
@@ -245,21 +246,16 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 		if err != nil {
 			return 0, fmt.Errorf("upsert entry %q: %w", entry.Title, err)
 		}
-		if n, _ := result.RowsAffected(); n > 0 {
-			var exists bool
-			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM entry_state es JOIN entries e ON e.id=es.entry_id WHERE e.feed_id=? AND e.identity=?)", feedID, entry.Identity).Scan(&exists); err != nil {
-				return 0, err
-			}
-			if !exists {
-				var entryID int64
-				if err := tx.QueryRowContext(ctx, "SELECT id FROM entries WHERE feed_id=? AND identity=?", feedID, entry.Identity).Scan(&entryID); err != nil {
-					return 0, err
-				}
-				if _, err := tx.ExecContext(ctx, "INSERT INTO entry_state(entry_id) VALUES (?)", entryID); err != nil {
-					return 0, err
-				}
-				added++
-			}
+		var entryID int64
+		if err := tx.QueryRowContext(ctx, "SELECT id FROM entries WHERE feed_id=? AND identity=?", feedID, entry.Identity).Scan(&entryID); err != nil {
+			return 0, err
+		}
+		stateResult, err := tx.ExecContext(ctx, "INSERT INTO entry_state(entry_id) VALUES (?) ON CONFLICT(entry_id) DO NOTHING", entryID)
+		if err != nil {
+			return 0, err
+		}
+		if n, _ := stateResult.RowsAffected(); n > 0 {
+			added++
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -270,11 +266,15 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 
 func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
 	query := `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title, e.author,
- e.published_at, e.updated_at, e.html, e.searchable_text,
+ e.published_at, e.updated_at,
+ CASE WHEN ec.status='succeeded' THEN ec.html ELSE e.html END,
+ CASE WHEN ec.status='succeeded' THEN ec.searchable_text ELSE e.searchable_text END,
+ CASE WHEN ec.status='succeeded' THEN 'full_article' ELSE 'feed' END,
  COALESCE(es.is_read, 0), COALESCE(es.is_starred, 0),
  COALESCE(es.reading_progress, 0)
  FROM entries e JOIN feeds f ON f.id=e.feed_id
- LEFT JOIN entry_state es ON es.entry_id=e.id WHERE 1=1`
+ LEFT JOIN entry_state es ON es.entry_id=e.id
+ LEFT JOIN entry_content ec ON ec.entry_id=e.id WHERE 1=1`
 	var args []any
 	if filter.FeedID != 0 {
 		query += " AND e.feed_id=?"
@@ -287,7 +287,7 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 		query += " AND COALESCE(es.is_starred, 0)=1"
 	}
 	if search := strings.TrimSpace(filter.Search); search != "" {
-		query += " AND (e.title LIKE ? ESCAPE '\\' OR e.searchable_text LIKE ? ESCAPE '\\')"
+		query += " AND (e.title LIKE ? ESCAPE '\\' OR (CASE WHEN ec.status='succeeded' THEN ec.searchable_text ELSE e.searchable_text END) LIKE ? ESCAPE '\\')"
 		pattern := "%" + escapeLike(search) + "%"
 		args = append(args, pattern, pattern)
 	}
@@ -309,13 +309,102 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 		var published, updated string
 		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.Identity,
 			&entry.URL, &entry.Title, &entry.Author, &published, &updated, &entry.HTML,
-			&entry.Text, &entry.Read, &entry.Starred, &entry.ReadingProgress); err != nil {
+			&entry.Text, &entry.ContentSource, &entry.Read, &entry.Starred, &entry.ReadingProgress); err != nil {
 			return nil, fmt.Errorf("scan entry: %w", err)
 		}
 		entry.PublishedAt, entry.UpdatedAt = parseTime(published), parseTime(updated)
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()
+}
+
+// EnrichmentCandidates returns likely partial entries whose current feed input
+// has not already been attempted. The original feed content is returned even
+// when a successful overlay currently exists.
+func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit int) ([]domain.Entry, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.feed_id, f.title, e.url, e.title,
+ e.updated_at, e.html, e.searchable_text, COALESCE(ec.input_hash, '')
+ FROM entries e JOIN feeds f ON f.id=e.feed_id
+ LEFT JOIN entry_content ec ON ec.entry_id=e.id
+ WHERE e.feed_id=?
+ ORDER BY CASE WHEN e.published_at='' THEN e.updated_at ELSE e.published_at END DESC, e.id DESC`, feedID)
+	if err != nil {
+		return nil, fmt.Errorf("list enrichment candidates: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]domain.Entry, 0, limit)
+	for rows.Next() {
+		var entry domain.Entry
+		var updated, attemptedHash string
+		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.URL,
+			&entry.Title, &updated, &entry.HTML, &entry.Text, &attemptedHash); err != nil {
+			return nil, fmt.Errorf("scan enrichment candidate: %w", err)
+		}
+		entry.UpdatedAt = parseTime(updated)
+		if !article.Candidate(entry) {
+			continue
+		}
+		entry.EnrichmentInputHash = article.InputHash(entry.URL, entry.HTML, entry.UpdatedAt)
+		if entry.EnrichmentInputHash == attemptedHash {
+			continue
+		}
+		candidates = append(candidates, entry)
+		if len(candidates) == limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list enrichment candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func (s *Store) SaveEnrichment(ctx context.Context, entryID int64, inputHash string, content article.Content) error {
+	now := formatTime(time.Now())
+	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_content
+ (entry_id, status, html, searchable_text, source_url, input_hash, attempted_at, fetched_at, last_error)
+ VALUES (?, 'succeeded', ?, ?, ?, ?, ?, ?, '')
+ ON CONFLICT(entry_id) DO UPDATE SET status='succeeded', html=excluded.html,
+ searchable_text=excluded.searchable_text, source_url=excluded.source_url,
+ input_hash=excluded.input_hash, attempted_at=excluded.attempted_at,
+ fetched_at=excluded.fetched_at, last_error=''`,
+		entryID, content.HTML, content.Text, content.SourceURL, inputHash, now, now)
+	if err != nil {
+		return fmt.Errorf("save entry enrichment: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// RecordEnrichmentError records an attempted input without discarding a prior
+// successful overlay. Entries with no successful overlay remain feed-backed.
+func (s *Store) RecordEnrichmentError(ctx context.Context, entryID int64, inputHash string, enrichmentErr error) error {
+	message := ""
+	if enrichmentErr != nil {
+		message = enrichmentErr.Error()
+		if characters := []rune(message); len(characters) > 2000 {
+			message = string(characters[:2000])
+		}
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_content
+ (entry_id, status, input_hash, attempted_at, last_error)
+ VALUES (?, 'failed', ?, ?, ?)
+ ON CONFLICT(entry_id) DO UPDATE SET
+ status=CASE WHEN entry_content.status='succeeded' THEN 'succeeded' ELSE 'failed' END,
+ input_hash=excluded.input_hash, attempted_at=excluded.attempted_at,
+ last_error=excluded.last_error`, entryID, inputHash, formatTime(time.Now()), message)
+	if err != nil {
+		return fmt.Errorf("record entry enrichment error: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) SetRead(ctx context.Context, id int64, read bool) error {

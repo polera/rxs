@@ -46,6 +46,33 @@ func TestLoadConfigDefaultsWhenMissing(t *testing.T) {
 	if !config.Reading.HideRead {
 		t.Fatal("hide_read did not default to true")
 	}
+	if config.Content.FullArticles != FullArticlesOff {
+		t.Fatalf("full_articles = %q, want %q", config.Content.FullArticles, FullArticlesOff)
+	}
+}
+
+func TestLoadFullArticleConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"content":{"full_articles":"  AuTo  "}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Content.FullArticles != FullArticlesAuto {
+		t.Fatalf("full_articles = %q, want %q", config.Content.FullArticles, FullArticlesAuto)
+	}
+}
+
+func TestLoadConfigRejectsUnknownFullArticleMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"content":{"full_articles":"always"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("unsupported full_articles mode was accepted")
+	}
 }
 
 func TestLoadReadingConfigEnablesMarkReadOnScroll(t *testing.T) {
@@ -164,6 +191,26 @@ func TestSaveColorSchemePreservesReadingConfig(t *testing.T) {
 	}
 	if config.Reading.HideRead {
 		t.Fatal("saving the color scheme discarded hide_read=false")
+	}
+}
+
+func TestSaveColorSchemePreservesContentConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"content": {"full_articles": "auto"},
+		"appearance": {"color_scheme": "dracula"}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveColorScheme(path, "nord"); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Content.FullArticles != FullArticlesAuto {
+		t.Fatalf("saving the color scheme discarded content configuration: %#v", config.Content)
 	}
 }
 

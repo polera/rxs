@@ -129,6 +129,34 @@ The setting applies to `j` / `k`, arrow keys, `gg`, and `G`. A jump marks only
 the preview you leave, and movement clamped at a list boundary does not mark
 anything.
 
+### Full-article downloads
+
+Full-article enrichment is off by default. To expand feed items that appear to
+contain only a summary or truncation, enable automatic downloads in
+`config.json`:
+
+```json
+{
+  "content": {
+    "full_articles": "auto"
+  }
+}
+```
+
+This setting applies to both the interactive reader and `rxs add`. In `auto`
+mode, rxs makes an additional request to an article's linked page only when the
+feed copy looks partial, then stores readable full text as a separate overlay
+for offline reading and search. Complete feed entries do not cause an article
+request, and failed downloads leave the feed-provided content intact. Attempts
+are retried only after the item's URL, feed content, or update time changes.
+
+Enrichment processes static HTML only. It does not run JavaScript, retain
+cookies, send URL credentials, or bypass authentication and paywalls. Private,
+loopback, link-local, and cloud-metadata network destinations are rejected,
+including redirect targets. Use `"full_articles": "off"` (the default) to
+disable the additional requests. Per-feed overrides and a manual retry command
+are possible follow-ups but are not currently available.
+
 ### Browser configuration
 
 Links and original articles open in the system browser by default. To use an interactive terminal browser, create `config.json` in the platform configuration directory (`$XDG_CONFIG_HOME/rxs/config.json` or `~/.config/rxs/config.json` on Linux and FreeBSD):
@@ -170,7 +198,7 @@ background are both set for named schemes so light schemes remain readable.
 `high-contrast` is a black-and-white scheme whose colors clear WCAG AA. Use
 `-config PATH` to load and persist the setting in another file.
 
-Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional.
+Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional. Full-article enrichment handles at most ten entries per feed refresh and also backfills eligible stored entries after a `304 Not Modified` response.
 
 ## Develop
 

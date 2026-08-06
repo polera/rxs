@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-isatty"
 	"github.com/polera/rxs/internal/app"
+	"github.com/polera/rxs/internal/article"
 	feedservice "github.com/polera/rxs/internal/feed"
 	"github.com/polera/rxs/internal/platform"
 	"github.com/polera/rxs/internal/store"
@@ -77,7 +78,7 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	if len(commandArgs) > 0 {
 		switch commandArgs[0] {
 		case "add":
-			return runAddCommand(context.Background(), commandArgs[1:], *dbPath, stdout, stderr)
+			return runAddCommand(context.Background(), commandArgs[1:], *dbPath, *configPath, stdout, stderr)
 		case "upgrade":
 			return runUpgradeCommand(commandArgs[1:], currentVersion, stdout, stderr)
 		default:
@@ -100,8 +101,7 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer repository.Close()
-	client := feedservice.NewClient(currentVersion)
-	refresher := feedservice.NewService(repository, client)
+	refresher := newFeedService(repository, currentVersion, config)
 	var model app.Model
 	if config.Browser.Mode == platform.BrowserTUI {
 		model = app.NewWithTUIBrowser(repository, refresher, func(rawURL string) (*exec.Cmd, error) {
@@ -230,12 +230,13 @@ func interactiveTerminal() bool {
 		(isatty.IsTerminal(stdout) || isatty.IsCygwinTerminal(stdout))
 }
 
-func runAddCommand(ctx context.Context, args []string, defaultDBPath string, stdout, stderr io.Writer) error {
+func runAddCommand(ctx context.Context, args []string, defaultDBPath, defaultConfigPath string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("rxs add", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	dbPath := flags.String("db", defaultDBPath, "SQLite database path")
+	configPath := flags.String("config", defaultConfigPath, "local configuration path")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: rxs add [-db PATH] URL")
+		fmt.Fprintln(stderr, "Usage: rxs add [-db PATH] [-config PATH] URL")
 		fmt.Fprintln(stderr, "\nOptions:")
 		flags.PrintDefaults()
 	}
@@ -246,12 +247,16 @@ func runAddCommand(ctx context.Context, args []string, defaultDBPath string, std
 		return err
 	}
 	if flags.NArg() != 1 {
-		return errors.New("usage: rxs add [-db PATH] URL")
+		return errors.New("usage: rxs add [-db PATH] [-config PATH] URL")
 	}
-	return addFeed(ctx, *dbPath, flags.Arg(0), stdout)
+	config, err := platform.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	return addFeed(ctx, *dbPath, flags.Arg(0), stdout, config)
 }
 
-func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer) error {
+func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer, config platform.Config) error {
 	repository, err := openStore(dbPath)
 	if err != nil {
 		return err
@@ -262,7 +267,7 @@ func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer) erro
 	if err != nil {
 		return err
 	}
-	result := feedservice.NewService(repository, feedservice.NewClient(installedVersion(version))).Refresh(ctx, source.ID)
+	result := newFeedService(repository, installedVersion(version), config).Refresh(ctx, source.ID)
 	if result.Err != nil {
 		return fmt.Errorf("feed %q was added, but its initial refresh failed: %w", source.URL, result.Err)
 	}
@@ -274,6 +279,14 @@ func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer) erro
 		return fmt.Errorf("write result: %w", err)
 	}
 	return nil
+}
+
+func newFeedService(repository *store.Store, currentVersion string, config platform.Config) *feedservice.Service {
+	options := []feedservice.Option{}
+	if config.Content.FullArticles == platform.FullArticlesAuto {
+		options = append(options, feedservice.WithArticleExtractor(article.NewExtractor(currentVersion)))
+	}
+	return feedservice.NewService(repository, feedservice.NewClient(currentVersion), options...)
 }
 
 func openStore(dbPath string) (*store.Store, error) {

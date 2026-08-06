@@ -17,6 +17,8 @@ const (
 	BrowserSystem      = "system"
 	BrowserTUI         = "tui"
 	DefaultColorScheme = "default"
+	FullArticlesOff    = "off"
+	FullArticlesAuto   = "auto"
 )
 
 // Config contains machine-local behavior that should not be stored in the
@@ -25,6 +27,12 @@ type Config struct {
 	Browser    BrowserConfig    `json:"browser"`
 	Appearance AppearanceConfig `json:"appearance"`
 	Reading    ReadingConfig    `json:"reading"`
+	Content    ContentConfig    `json:"content"`
+}
+
+// ContentConfig controls optional downloads beyond the subscribed feed.
+type ContentConfig struct {
+	FullArticles string `json:"full_articles"`
 }
 
 // AppearanceConfig contains visual settings for the terminal interface.
@@ -52,6 +60,7 @@ func DefaultConfig() Config {
 		Browser:    BrowserConfig{Mode: BrowserSystem},
 		Appearance: AppearanceConfig{ColorScheme: DefaultColorScheme},
 		Reading:    ReadingConfig{HideRead: true},
+		Content:    ContentConfig{FullArticles: FullArticlesOff},
 	}
 }
 
@@ -80,8 +89,15 @@ func LoadConfig(path string) (Config, error) {
 	}
 	config.Browser.Mode = strings.ToLower(strings.TrimSpace(config.Browser.Mode))
 	config.Appearance.ColorScheme = strings.ToLower(strings.TrimSpace(config.Appearance.ColorScheme))
+	config.Content.FullArticles = strings.ToLower(strings.TrimSpace(config.Content.FullArticles))
 	if config.Appearance.ColorScheme == "" {
 		config.Appearance.ColorScheme = DefaultColorScheme
+	}
+	if config.Content.FullArticles == "" {
+		config.Content.FullArticles = FullArticlesOff
+	}
+	if config.Content.FullArticles != FullArticlesOff && config.Content.FullArticles != FullArticlesAuto {
+		return Config{}, fmt.Errorf("unknown full_articles mode %q (use %q or %q)", config.Content.FullArticles, FullArticlesOff, FullArticlesAuto)
 	}
 	switch config.Browser.Mode {
 	case BrowserSystem:
