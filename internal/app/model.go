@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -36,6 +37,7 @@ type TUIBrowser func(string) (*exec.Cmd, error)
 const (
 	maxReaderTextWidth      = 88
 	readerHorizontalPadding = 2
+	statusLifetime          = 10 * time.Second
 )
 
 type pane int
@@ -97,11 +99,13 @@ type Model struct {
 	input               textinput.Model
 	reader              viewport.Model
 
-	width, height int
-	busy          bool
-	status        string
-	errStatus     bool
-	warningStatus string
+	width, height      int
+	busy               bool
+	status             string
+	errStatus          bool
+	warningStatus      string
+	statusGeneration   uint64
+	statusTimerPending bool
 
 	markReadOnScroll bool
 }
@@ -143,6 +147,7 @@ type colorSchemeSavedMsg struct {
 	name string
 	err  error
 }
+type statusTimeoutMsg struct{ generation uint64 }
 
 func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles) Model {
 	return newModel(store, refresher, browser, nil, modelStyles(styles))
@@ -174,7 +179,8 @@ func (m *Model) SetHideRead(enabled bool) {
 // SetWarningStatus displays a non-blocking warning until another status
 // replaces it.
 func (m *Model) SetWarningStatus(message string) {
-	m.status, m.errStatus, m.warningStatus = message, false, message
+	m.setPersistentStatus(message, false)
+	m.warningStatus = message
 }
 
 func modelStyles(configured []ui.Styles) ui.Styles {
@@ -206,7 +212,21 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 
 func (m Model) Init() tea.Cmd { return m.initialLoadCmd() }
 
-func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
+	defer func() {
+		updated, ok := next.(Model)
+		if !ok || !updated.statusTimerPending {
+			return
+		}
+		updated.statusTimerPending = false
+		generation := updated.statusGeneration
+		next = updated
+		timer := tea.Tick(statusLifetime, func(time.Time) tea.Msg {
+			return statusTimeoutMsg{generation: generation}
+		})
+		cmd = tea.Batch(cmd, timer)
+	}()
+
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -230,7 +250,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncReader()
 		if m.status == "Loading subscriptions…" || m.status == "Loading articles…" {
-			m.status, m.errStatus = "Ready", false
+			m.clearStatus()
 		}
 		if msg.initial {
 			return m.refreshAll()
@@ -242,7 +262,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(msg.err)
 			return m, nil
 		}
-		m.status, m.errStatus = "Added "+msg.feed.Title+"; refreshing…", false
+		m.setPersistentStatus("Added "+msg.feed.Title+"; refreshing…", false)
 		m.busy = true
 		return m, m.refreshOneCmd(msg.feed.ID)
 	case deleteMsg:
@@ -250,7 +270,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
-			m.status, m.errStatus = "Feed removed", false
+			m.setStatus("Feed removed", false)
 			m.feedCursor, m.entryCursor = 0, 0
 			m.filter.FeedID, m.filter.StarredOnly = 0, false
 			m.readerEntry = nil
@@ -282,24 +302,21 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if failures > 0 {
 			if expanded > 0 || expansionFailures > 0 {
-				m.status = fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable, %d feed(s) failed: %v", added, expanded, expansionFailures, failures, lastErr)
+				m.setStatus(fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable, %d feed(s) failed: %v", added, expanded, expansionFailures, failures, lastErr), true)
 			} else {
-				m.status = fmt.Sprintf("Refresh finished: %d new, %d failed: %v", added, failures, lastErr)
+				m.setStatus(fmt.Sprintf("Refresh finished: %d new, %d failed: %v", added, failures, lastErr), true)
 			}
-			m.errStatus = true
 		} else if expanded > 0 || expansionFailures > 0 {
-			m.status = fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable", added, expanded, expansionFailures)
-			m.errStatus = false
+			m.setStatus(fmt.Sprintf("Refresh finished: %d new, %d expanded, %d full-text fetch unavailable", added, expanded, expansionFailures), false)
 		} else {
-			m.status = fmt.Sprintf("Refresh finished: %d new article(s)", added)
-			m.errStatus = false
+			m.setStatus(fmt.Sprintf("Refresh finished: %d new article(s)", added), false)
 		}
 		return m, m.loadCmd()
 	case browserMsg:
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
-			m.status, m.errStatus = "Opened "+msg.target, false
+			m.setStatus("Opened "+msg.target, false)
 		}
 		return m, nil
 	case importMsg:
@@ -307,7 +324,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
-			m.status, m.errStatus = fmt.Sprintf("Imported %d subscription(s)", msg.count), false
+			m.setStatus(fmt.Sprintf("Imported %d subscription(s)", msg.count), false)
 		}
 		return m, m.loadCmd()
 	case exportMsg:
@@ -315,14 +332,19 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
-			m.status, m.errStatus = "Exported subscriptions to "+msg.path, false
+			m.setStatus("Exported subscriptions to "+msg.path, false)
 		}
 		return m, nil
 	case colorSchemeSavedMsg:
 		if msg.err != nil {
 			m.setError(fmt.Errorf("save color scheme: %w", msg.err))
 		} else {
-			m.status, m.errStatus = "Color scheme: "+msg.name, false
+			m.setStatus("Color scheme: "+msg.name, false)
+		}
+		return m, nil
+	case statusTimeoutMsg:
+		if msg.generation == m.statusGeneration {
+			m.clearStatus()
 		}
 		return m, nil
 	case tea.KeyPressMsg:
@@ -341,4 +363,20 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m *Model) setStatus(message string, isError bool) {
+	m.status, m.errStatus = message, isError
+	m.statusGeneration++
+	m.statusTimerPending = message != ""
+}
+
+func (m *Model) setPersistentStatus(message string, isError bool) {
+	m.status, m.errStatus = message, isError
+	m.statusGeneration++
+	m.statusTimerPending = false
+}
+
+func (m *Model) clearStatus() {
+	m.setPersistentStatus("", false)
 }

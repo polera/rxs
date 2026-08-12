@@ -93,6 +93,7 @@ refresh at any time.
 | Enter | Open an article, or open the selected link |
 | Space | Toggle read/unread |
 | `s` | Toggle starred |
+| `y` | Copy the selected article's URL to the clipboard |
 | `r` / `R` | Refresh selected feed / all feeds |
 | `/` in feeds | Filter feeds by title or URL; submit an empty filter to clear |
 | `/` in articles | Search downloaded titles and text; submit an empty search to clear |
@@ -104,6 +105,9 @@ refresh at any time.
 | `?` | Show help |
 | `q` | Ask to quit, or close help and confirmation dialogs |
 | Esc | Close an input dialog |
+
+Copying uses the terminal's OSC52 clipboard support. The terminal must allow
+clipboard writes for `y` to update the system clipboard.
 
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
 

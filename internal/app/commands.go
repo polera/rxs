@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/polera/rxs/internal/domain"
@@ -17,6 +18,19 @@ func (m Model) openBrowser() (tea.Model, tea.Cmd) {
 	}
 	url := m.entries[m.entryCursor].URL
 	return m.openURL(url, "original article")
+}
+
+func (m Model) copyArticleURL() (tea.Model, tea.Cmd) {
+	if m.active == feedsPane || len(m.entries) == 0 {
+		return m, nil
+	}
+	url := m.currentReaderEntry().URL
+	if strings.TrimSpace(url) == "" {
+		m.setError(fmt.Errorf("article has no URL"))
+		return m, nil
+	}
+	m.setStatus("Copied article URL", false)
+	return m, tea.SetClipboard(url)
 }
 
 func (m Model) openURL(url, target string) (tea.Model, tea.Cmd) {
@@ -109,7 +123,7 @@ func (m *Model) setError(err error) {
 	if err == nil {
 		return
 	}
-	m.status, m.errStatus = err.Error(), true
+	m.setStatus(err.Error(), true)
 }
 
 func (m *Model) clampCursors() {

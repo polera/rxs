@@ -73,19 +73,19 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.readerMatchCursor = -1
 			m.renderReaderContent(m.currentReaderEntry())
 			m.checkReaderReachedBottom()
-			m.status, m.errStatus = "Article search cleared", false
+			m.setStatus("Article search cleared", false)
 			return m, nil
 		}
 		if value == "" && mode == searchOverlay {
 			m.filter.Search = ""
-			m.status, m.errStatus = "Search cleared", false
+			m.setStatus("Search cleared", false)
 			return m, m.loadCmd()
 		}
 		if value == "" && mode == feedFilterOverlay {
 			m.feedFilter = ""
 			m.applyFeedSearch()
 			m.resetFeedSelection()
-			m.status, m.errStatus = "Feed filter cleared", false
+			m.setStatus("Feed filter cleared", false)
 			return m, m.loadCmd()
 		}
 		if value == "" {
@@ -102,13 +102,13 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		case searchOverlay:
 			m.filter.Search = value
 			m.entryCursor = 0
-			m.status = "Search: " + value
+			m.setStatus("Search: "+value, false)
 			return m, m.loadCmd()
 		case feedFilterOverlay:
 			m.feedFilter = value
 			m.applyFeedSearch()
 			m.resetFeedSelection()
-			m.status, m.errStatus = "Feed filter: "+value, false
+			m.setStatus("Feed filter: "+value, false)
 			return m, m.loadCmd()
 		case readerSearchOverlay:
 			m.searchReader(value)
@@ -165,7 +165,7 @@ func (m Model) updateColorSchemeChooser(key string) (tea.Model, tea.Cmd) {
 		name := m.styles.Name
 		m.closeOverlay()
 		if m.saveScheme == nil {
-			m.status, m.errStatus = "Color scheme: "+name, false
+			m.setStatus("Color scheme: "+name, false)
 			return m, nil
 		}
 		save := m.saveScheme

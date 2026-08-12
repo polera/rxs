@@ -74,7 +74,7 @@ func (m *Model) searchReader(query string) {
 	m.readerMatchCursor = 0
 	m.renderReaderContent(m.currentReaderEntry())
 	if len(m.readerMatches) == 0 {
-		m.status, m.errStatus = fmt.Sprintf("No matches for %q", query), true
+		m.setStatus(fmt.Sprintf("No matches for %q", query), true)
 		return
 	}
 	for index, match := range m.readerMatches {
@@ -90,7 +90,7 @@ func (m *Model) searchReader(query string) {
 func (m *Model) selectReaderMatch(delta int) {
 	if len(m.readerMatches) == 0 {
 		if m.readerSearch != "" {
-			m.status, m.errStatus = fmt.Sprintf("No matches for %q", m.readerSearch), true
+			m.setStatus(fmt.Sprintf("No matches for %q", m.readerSearch), true)
 		}
 		return
 	}
@@ -105,7 +105,7 @@ func (m *Model) showReaderMatch() {
 	match := m.readerMatches[m.readerMatchCursor]
 	m.renderReaderContent(m.currentReaderEntry())
 	m.reader.EnsureVisible(match.line, match.start, match.end)
-	m.status, m.errStatus = fmt.Sprintf("Match %d/%d: %s", m.readerMatchCursor+1, len(m.readerMatches), m.readerSearch), false
+	m.setStatus(fmt.Sprintf("Match %d/%d: %s", m.readerMatchCursor+1, len(m.readerMatches), m.readerSearch), false)
 	m.checkReaderReachedBottom()
 }
 
@@ -162,7 +162,7 @@ func (m *Model) selectReaderLink(delta int) {
 		m.readerLinkCursor = (m.readerLinkCursor + delta + len(m.readerLinks)) % len(m.readerLinks)
 	}
 	link := m.readerLinks[m.readerLinkCursor]
-	m.status, m.errStatus = fmt.Sprintf("Link %d/%d: %s", m.readerLinkCursor+1, len(m.readerLinks), link.Text), false
+	m.setStatus(fmt.Sprintf("Link %d/%d: %s", m.readerLinkCursor+1, len(m.readerLinks), link.Text), false)
 	m.renderReaderContent(m.currentReaderEntry())
 	m.ensureReaderLinkVisible(m.readerLinkCursor, link)
 	m.checkReaderReachedBottom()

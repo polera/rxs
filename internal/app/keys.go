@@ -12,13 +12,16 @@ import (
 
 func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if isNavigationKey(key, m.pendingG) {
+		m.clearStatus()
+	}
 	if m.pendingG {
 		m.pendingG = false
 		if key == "g" {
 			if m.active == readerPane {
 				m.reader.GotoTop()
 				m.checkReaderReachedBottom()
-				m.status, m.errStatus = "Beginning of article", false
+				m.setStatus("Beginning of article", false)
 				return m, nil
 			}
 			oldCursor, oldEntryID := m.entryCursor, m.selectedEntryID()
@@ -38,7 +41,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.reader.GotoBottom()
 			m.checkReaderReachedBottom()
-			m.status, m.errStatus = "End of article", false
+			m.setStatus("End of article", false)
 			return m, nil
 		case "ctrl+f":
 			m.reader.PageDown()
@@ -179,13 +182,15 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.toggleRead()
 	case "s":
 		return m.toggleStarred()
+	case "y":
+		return m.copyArticleURL()
 	case "u":
 		m.filter.UnreadOnly = !m.filter.UnreadOnly
 		m.entryCursor = 0
 		if m.filter.UnreadOnly {
-			m.status = "Hiding read articles"
+			m.setStatus("Hiding read articles", false)
 		} else {
-			m.status = "Showing read articles"
+			m.setStatus("Showing read articles", false)
 		}
 		return m, m.loadCmd()
 	case "r":
@@ -209,6 +214,19 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func isNavigationKey(key string, pendingG bool) bool {
+	switch key {
+	case "j", "down", "k", "up", "h", "left", "l", "right",
+		"tab", "shift+tab", "enter", "esc", "G", "ctrl+f", "ctrl+b",
+		"ctrl+d", "ctrl+u", "n", "N":
+		return true
+	case "g":
+		return pendingG
+	default:
+		return false
+	}
+}
+
 func (m *Model) move(delta int) {
 	switch m.active {
 	case feedsPane:
@@ -217,7 +235,7 @@ func (m *Model) move(delta int) {
 		if old != m.feedCursor {
 			m.entryCursor = 0
 			m.applyFeedFilter()
-			m.status, m.errStatus = "Loading articles…", false
+			m.setPersistentStatus("Loading articles…", false)
 		}
 	case articlesPane:
 		m.entryCursor = clamp(m.entryCursor+delta, 0, len(m.entries)-1)
@@ -248,7 +266,7 @@ func (m *Model) moveToListBoundary(end bool) bool {
 		m.feedCursor = target
 		m.entryCursor = 0
 		m.applyFeedFilter()
-		m.status, m.errStatus = "Loading articles…", false
+		m.setPersistentStatus("Loading articles…", false)
 		return true
 	case articlesPane:
 		target := 0
@@ -451,7 +469,7 @@ func (m Model) refreshSelected() (tea.Model, tea.Cmd) {
 	}
 	feed := m.feeds[m.feedCursor-2]
 	m.busy = true
-	m.status = "Refreshing " + feed.Title + "…"
+	m.setPersistentStatus("Refreshing "+feed.Title+"…", false)
 	return m, m.refreshOneCmd(feed.ID)
 }
 
@@ -460,7 +478,7 @@ func (m Model) refreshAll() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.busy = true
-	m.status = fmt.Sprintf("Refreshing %d feed(s)…", len(m.allFeeds))
+	m.setPersistentStatus(fmt.Sprintf("Refreshing %d feed(s)…", len(m.allFeeds)), false)
 	feeds := append([]domain.Feed(nil), m.allFeeds...)
 	return m, func() tea.Msg {
 		return refreshMsg{results: m.refresher.RefreshAll(context.Background(), feeds, 4)}

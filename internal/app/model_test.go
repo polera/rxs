@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -124,6 +125,22 @@ func update(t *testing.T, model Model, msg tea.Msg) (Model, tea.Cmd) {
 	return got, cmd
 }
 
+func primaryCommandMessage(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	message := cmd()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok {
+		return message
+	}
+	if len(batch) == 0 {
+		t.Fatal("command returned an empty batch")
+	}
+	return batch[0]()
+}
+
 func loadedModel(t *testing.T) (Model, *fakeStore) {
 	t.Helper()
 	store := &fakeStore{
@@ -168,9 +185,9 @@ func TestInitRefreshesFeedsAfterInitialLoad(t *testing.T) {
 		t.Fatalf("refresh result: status=%q busy=%t cmd=%v", model.status, model.busy, reloadCmd)
 	}
 
-	model, nextCmd := update(t, model, reloadCmd())
+	model, nextCmd := update(t, model, primaryCommandMessage(t, reloadCmd))
 	if nextCmd != nil || refresher.calls != 1 {
-		t.Fatalf("reload scheduled another refresh: calls=%d cmd=%v", refresher.calls, nextCmd)
+		t.Fatalf("reload scheduled another command: calls=%d cmd=%v", refresher.calls, nextCmd)
 	}
 }
 
@@ -266,6 +283,54 @@ func TestWarningStatusUsesWarningStyleAndDoesNotBlockLoading(t *testing.T) {
 	model, _ = update(t, model, browserMsg{target: "link"})
 	if model.status != "Opened link" || model.status == model.warningStatus {
 		t.Fatalf("replacement status = %q, warning = %q", model.status, model.warningStatus)
+	}
+}
+
+func TestStatusExpiresAfterTenSecondsAndIgnoresStaleTimeouts(t *testing.T) {
+	if statusLifetime != 10*time.Second {
+		t.Fatalf("status lifetime = %s, want 10s", statusLifetime)
+	}
+	model, _ := loadedModel(t)
+
+	model, timer := update(t, model, browserMsg{target: "link"})
+	if timer == nil || model.status != "Opened link" {
+		t.Fatalf("opened status=%q timer=%v", model.status, timer)
+	}
+	oldGeneration := model.statusGeneration
+
+	model, timer = update(t, model, browserMsg{target: "original article"})
+	if timer == nil || model.status != "Opened original article" {
+		t.Fatalf("replacement status=%q timer=%v", model.status, timer)
+	}
+	model, _ = update(t, model, statusTimeoutMsg{generation: oldGeneration})
+	if model.status != "Opened original article" {
+		t.Fatalf("stale timeout cleared replacement status: %q", model.status)
+	}
+
+	model, _ = update(t, model, statusTimeoutMsg{generation: model.statusGeneration})
+	if model.status != "" || model.errStatus {
+		t.Fatalf("expired status=%q error=%t", model.status, model.errStatus)
+	}
+}
+
+func TestNavigationClearsStatus(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.active = articlesPane
+	model.entries[0].URL = "https://example.test/first"
+
+	model, _ = update(t, model, key('y'))
+	generation := model.statusGeneration
+	if model.status != "Copied article URL" {
+		t.Fatalf("copy status = %q", model.status)
+	}
+
+	model, _ = update(t, model, key('j'))
+	if model.status != "" || model.entryCursor != 1 {
+		t.Fatalf("navigation left status=%q cursor=%d", model.status, model.entryCursor)
+	}
+	model, _ = update(t, model, statusTimeoutMsg{generation: generation})
+	if model.status != "" {
+		t.Fatalf("old timeout restored or replaced cleared status: %q", model.status)
 	}
 }
 
@@ -572,7 +637,7 @@ func TestUnreadOnlyReloadPreservesSelectedArticle(t *testing.T) {
 	if loadCmd == nil {
 		t.Fatal("read completion did not reload counts and entries")
 	}
-	model, _ = update(t, model, loadCmd())
+	model, _ = update(t, model, primaryCommandMessage(t, loadCmd))
 	if len(model.entries) != 1 || model.entries[0].ID != 11 || model.entryCursor != 0 {
 		t.Fatalf("reloaded selection: cursor=%d entries=%#v", model.entryCursor, model.entries)
 	}
@@ -590,7 +655,7 @@ func TestHideReadSetsInitialFilterAndCanBeToggledForSession(t *testing.T) {
 	model.SetHideRead(true)
 
 	loadCmd := model.Init()
-	model, _ = update(t, model, loadCmd())
+	model, _ = update(t, model, primaryCommandMessage(t, loadCmd))
 	if !store.lastFilter.UnreadOnly || len(model.entries) != 1 || model.entries[0].ID != 10 {
 		t.Fatalf("initial filter=%#v entries=%#v", store.lastFilter, model.entries)
 	}
@@ -599,7 +664,7 @@ func TestHideReadSetsInitialFilterAndCanBeToggledForSession(t *testing.T) {
 	if loadCmd == nil || model.filter.UnreadOnly || model.status != "Showing read articles" {
 		t.Fatalf("toggle result: filter=%#v status=%q cmd=%v", model.filter, model.status, loadCmd)
 	}
-	model, _ = update(t, model, loadCmd())
+	model, _ = update(t, model, primaryCommandMessage(t, loadCmd))
 	if store.lastFilter.UnreadOnly || len(model.entries) != 2 {
 		t.Fatalf("toggled filter=%#v entries=%#v", store.lastFilter, model.entries)
 	}
@@ -622,7 +687,7 @@ func TestReadPersistenceFailureReloadsAndDuplicateWritesAreSuppressed(t *testing
 	if loadCmd == nil || !model.errStatus || !strings.Contains(model.status, "write failed") {
 		t.Fatalf("failure status=%q error=%t cmd=%v", model.status, model.errStatus, loadCmd)
 	}
-	model, _ = update(t, model, loadCmd())
+	model, _ = update(t, model, primaryCommandMessage(t, loadCmd))
 	if model.entries[0].Read {
 		t.Fatal("reload after persistence failure did not restore stored read state")
 	}
@@ -1068,8 +1133,119 @@ func TestArticleLoadingStatusClearsWhenLoadCompletes(t *testing.T) {
 	}
 
 	model, _ = update(t, model, cmd())
-	if model.status != "Ready" || model.errStatus {
+	if model.status != "" || model.errStatus {
 		t.Fatalf("completed status = %q, error = %t", model.status, model.errStatus)
+	}
+}
+
+func TestCopyArticleURLFromArticleList(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.entries[1].URL = "https://example.test/articles/second"
+	model.active = articlesPane
+	model.entryCursor = 1
+
+	model, cmd := update(t, model, key('y'))
+
+	if cmd == nil {
+		t.Fatal("copying an article URL returned no clipboard command")
+	}
+	if got, want := fmt.Sprint(primaryCommandMessage(t, cmd)), model.entries[1].URL; got != want {
+		t.Fatalf("clipboard content = %q, want %q", got, want)
+	}
+	if model.status != "Copied article URL" || model.errStatus {
+		t.Fatalf("copy status = %q, error=%t", model.status, model.errStatus)
+	}
+	if model.active != articlesPane || model.entryCursor != 1 || model.entries[1].Read || model.entries[1].Starred {
+		t.Fatalf("copy changed article state: active=%d cursor=%d entry=%#v", model.active, model.entryCursor, model.entries[1])
+	}
+}
+
+func TestCopyArticleURLFromReaderIgnoresSelectedLink(t *testing.T) {
+	store := &fakeStore{
+		feeds: []domain.Feed{{ID: 1, Title: "Feed"}},
+		entries: []domain.Entry{{
+			ID: 10, FeedID: 1, FeedTitle: "Feed", Title: "First",
+			URL:  "https://example.test/articles/first",
+			HTML: `<p>Read <a href="/related">the related article</a>.</p>`,
+			Text: "Read the related article.",
+		}},
+	}
+	model := New(store, fakeRefresher{}, func(string) error { return nil })
+	model, _ = update(t, model, loadedMsg{feeds: store.feeds, entries: store.entries})
+	model, _ = update(t, model, key('l'))
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	model, _ = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	if model.readerLinkCursor != 0 {
+		t.Fatalf("selected reader link = %d, want 0", model.readerLinkCursor)
+	}
+
+	model, cmd := update(t, model, key('y'))
+
+	if cmd == nil {
+		t.Fatal("copying from the reader returned no clipboard command")
+	}
+	if got, want := fmt.Sprint(primaryCommandMessage(t, cmd)), store.entries[0].URL; got != want {
+		t.Fatalf("clipboard content = %q, want original article URL %q", got, want)
+	}
+	if model.status != "Copied article URL" || model.readerLinkCursor != 0 {
+		t.Fatalf("copy changed reader state: status=%q link=%d", model.status, model.readerLinkCursor)
+	}
+}
+
+func TestCopyArticleURLHandlesUnavailableArticle(t *testing.T) {
+	t.Run("feeds pane", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		originalStatus := model.status
+
+		model, cmd := update(t, model, key('y'))
+
+		if cmd != nil || model.status != originalStatus {
+			t.Fatalf("copy in feeds pane returned status=%q cmd=%v", model.status, cmd)
+		}
+	})
+
+	t.Run("no articles", func(t *testing.T) {
+		store := &fakeStore{}
+		model := New(store, fakeRefresher{}, func(string) error { return nil })
+		model, _ = update(t, model, loadedMsg{})
+		model.active = articlesPane
+		originalStatus := model.status
+
+		model, cmd := update(t, model, key('y'))
+
+		if cmd != nil || model.status != originalStatus {
+			t.Fatalf("copy without articles returned status=%q cmd=%v", model.status, cmd)
+		}
+	})
+
+	t.Run("empty URL", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.active = articlesPane
+
+		model, cmd := update(t, model, key('y'))
+
+		if cmd == nil || model.status != "article has no URL" || !model.errStatus {
+			t.Fatalf("empty URL returned status=%q error=%t cmd=%v", model.status, model.errStatus, cmd)
+		}
+	})
+}
+
+func TestCopyArticleURLIsShownInArticleHelpAndFooters(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.width = 180
+	model.active = articlesPane
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "y copy URL") {
+		t.Fatalf("article footer does not show copy shortcut: %q", view)
+	}
+
+	model.active = readerPane
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "y copy URL") {
+		t.Fatalf("reader footer does not show copy shortcut: %q", view)
+	}
+
+	model.overlay = helpOverlay
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "y               copy article URL") {
+		t.Fatalf("help does not show copy shortcut: %q", view)
 	}
 }
 
@@ -1217,8 +1393,8 @@ func TestReaderSearchFindsAndNavigatesMatches(t *testing.T) {
 	}
 	var cmd tea.Cmd
 	model, cmd = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
-	if cmd != nil {
-		t.Fatal("reader search unexpectedly loaded articles")
+	if cmd == nil {
+		t.Fatal("reader search did not schedule status expiry")
 	}
 	if model.filter.Search != "" {
 		t.Fatalf("reader search changed article filter to %q", model.filter.Search)
