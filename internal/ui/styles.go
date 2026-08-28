@@ -32,6 +32,7 @@ type Styles struct {
 	Name        string
 	Scheme      Scheme
 	Base        lipgloss.Style
+	Heading     lipgloss.Style
 	Selected    lipgloss.Style
 	Dim         lipgloss.Style
 	Danger      lipgloss.Style
@@ -222,6 +223,7 @@ func stylesFor(name string, scheme Scheme) Styles {
 		Name:        name,
 		Scheme:      scheme,
 		Base:        base,
+		Heading:     lipgloss.NewStyle().Foreground(scheme.Accent).Bold(true),
 		Selected:    lipgloss.NewStyle().Foreground(scheme.SelectionForeground).Background(scheme.Selection).Bold(true),
 		Dim:         lipgloss.NewStyle().Foreground(scheme.Muted),
 		Danger:      lipgloss.NewStyle().Foreground(scheme.Danger),

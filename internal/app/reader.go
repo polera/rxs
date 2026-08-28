@@ -43,11 +43,8 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 	}
 	meta := strings.Trim(strings.Join(metadata, " · "), " ·")
 	content := entry.Text
-	if content == "" {
-		content = "This feed did not include article content. Press o to open the original."
-	}
-	if len(m.readerLinks) > 0 {
-		linkedContent, _ := render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
+	if entry.HTML != "" {
+		content, _ = render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
 			linkID := fmt.Sprintf("id=rxs-link-%d", index)
 			style := m.styles.Link.Hyperlink(link.URL, linkID)
 			if index == m.readerLinkCursor {
@@ -55,8 +52,11 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 			}
 			return style.Render(text)
 		})
-		content = linkedContent
 	}
+	if content == "" {
+		content = "This feed did not include article content. Press o to open the original."
+	}
+	content = m.styleReaderHeadings(content)
 	article := m.styles.Selected.Render(entry.Title) + "\n" + m.styles.Dim.Render(meta) + "\n\n" + content
 	wrapped := lipgloss.Wrap(article, m.readerTextWidth(), " ")
 	m.readerMatches = findReaderMatches(wrapped, m.readerSearch)
@@ -67,6 +67,21 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 		wrapped = m.highlightReaderMatches(wrapped, m.readerMatches, m.readerMatchCursor)
 	}
 	m.reader.SetContent(wrapped)
+}
+
+func (m Model) styleReaderHeadings(content string) string {
+	lines := strings.Split(content, "\n")
+	for index, line := range lines {
+		plain := ansi.Strip(line)
+		level := 0
+		for level < len(plain) && level < 6 && plain[level] == '#' {
+			level++
+		}
+		if level >= 2 && level < len(plain) && plain[level] == ' ' {
+			lines[index] = m.styles.Heading.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) searchReader(query string) {

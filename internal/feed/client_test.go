@@ -37,6 +37,37 @@ func TestFetchFixtures(t *testing.T) {
 	}
 }
 
+func TestFetchPreservesPlaintextAdvisoryFormatting(t *testing.T) {
+	body := []byte(`<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>BSDSec</title>
+  <id>https://example.test/feed</id>
+  <updated>2026-08-25T20:12:04Z</updated>
+  <entry>
+    <title>Security advisory</title>
+    <id>advisory-1</id>
+    <updated>2026-08-25T20:12:04Z</updated>
+    <content type="html">Branch/path      Hash
+- ------------------------
+See &lt;URL:https://security.example/&gt;.
+# git show &lt;commit hash&gt;</content>
+  </entry>
+</feed>`)
+	client := NewClient("test")
+	client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusOK, body, nil), nil
+	})
+
+	parsed, err := client.Fetch(context.Background(), domain.Feed{URL: "https://example.test/feed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "    Branch/path      Hash\n    - ------------------------\n    See <URL:https://security.example/>.\n    # git show <commit hash>"
+	if got := parsed.Entries[0].Text; got != want {
+		t.Fatalf("entry text = %q, want %q", got, want)
+	}
+}
+
 func TestFetchUsesConditionalRequest(t *testing.T) {
 	client := NewClient("test")
 	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {

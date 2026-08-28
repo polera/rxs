@@ -259,6 +259,25 @@ func TestThemeAppliesBaseColorsSelectionsErrorsAndLinks(t *testing.T) {
 	}
 }
 
+func TestReaderStylesArticleHeadings(t *testing.T) {
+	styles, err := ui.ResolveScheme("solarized-light")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(&fakeStore{}, fakeRefresher{}, func(string) error { return nil }, styles)
+	model.setReaderContent(domain.Entry{
+		Title: "Article",
+		HTML:  `<p>Introduction.</p><h3>Section</h3><h4>Detail</h4><p>Body.</p>`,
+	})
+
+	content := model.reader.GetContent()
+	for _, heading := range []string{"## Section", "### Detail"} {
+		if !strings.Contains(content, styles.Heading.Render(heading)) {
+			t.Fatalf("reader content did not style heading %q: %q", heading, content)
+		}
+	}
+}
+
 func TestWarningStatusUsesWarningStyleAndDoesNotBlockLoading(t *testing.T) {
 	styles, err := ui.ResolveScheme("solarized-light")
 	if err != nil {

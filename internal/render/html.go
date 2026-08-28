@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"html"
 	"net/url"
-	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
-
-var whitespace = regexp.MustCompile(`[ \t\r\f\v]+`)
 
 // Link is a navigable HTTP(S) hyperlink found in an article.
 type Link struct {
@@ -30,15 +28,12 @@ func Text(fragment string) string {
 	if strings.TrimSpace(fragment) == "" {
 		return ""
 	}
-	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
+	nodes, err := parseFragment(fragment)
 	if err != nil {
 		return strings.TrimSpace(html.UnescapeString(stripTags(fragment)))
 	}
-	var b strings.Builder
-	for _, node := range nodes {
-		writeNode(&b, node)
-	}
-	return cleanText(b.String())
+	renderer := newTextRenderer(nil, nil, headingBase(nodes))
+	return renderer.render(nodes)
 }
 
 // TextWithLinks extracts readable text and preserves valid HTTP(S) anchors in
@@ -48,40 +43,49 @@ func TextWithLinks(fragment, baseURL string, formatter LinkFormatter) (string, [
 	if strings.TrimSpace(fragment) == "" {
 		return "", nil
 	}
-	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
+	nodes, err := parseFragment(fragment)
 	if err != nil {
 		return strings.TrimSpace(html.UnescapeString(stripTags(fragment))), nil
 	}
 	base, _ := url.Parse(strings.TrimSpace(baseURL))
-	var b strings.Builder
 	var links []Link
-	for _, node := range nodes {
-		writeLinkedNode(&b, node, base, &links)
-	}
-	content := cleanText(b.String())
+	renderer := newTextRenderer(base, &links, headingBase(nodes))
+	content := renderer.render(nodes)
 	return formatLinkMarkers(content, links, formatter), links
 }
 
-func cleanText(content string) string {
-	lines := strings.Split(strings.ReplaceAll(content, "\u00a0", " "), "\n")
-	cleaned := make([]string, 0, len(lines))
-	blank := true
-	for _, line := range lines {
-		line = strings.TrimSpace(whitespace.ReplaceAllString(line, " "))
-		if line == "" {
-			if !blank {
-				cleaned = append(cleaned, "")
-				blank = true
-			}
-			continue
+func parseFragment(fragment string) ([]*xhtml.Node, error) {
+	nodes, err := xhtml.ParseFragment(strings.NewReader(fragment), &xhtml.Node{Type: xhtml.ElementNode, Data: "div", DataAtom: atom.Div})
+	if err != nil || hasHTMLElement(nodes) {
+		return nodes, err
+	}
+
+	// Some feeds put plain text in fields normally used for HTML. Treat it as
+	// preformatted content so line breaks and angle-bracket notation survive.
+	pre := &xhtml.Node{Type: xhtml.ElementNode, Data: "pre", DataAtom: atom.Pre}
+	pre.AppendChild(&xhtml.Node{Type: xhtml.TextNode, Data: fragment})
+	return []*xhtml.Node{pre}, nil
+}
+
+func hasHTMLElement(nodes []*xhtml.Node) bool {
+	var visit func(*xhtml.Node) bool
+	visit = func(node *xhtml.Node) bool {
+		if node.Type == xhtml.ElementNode && node.DataAtom != 0 {
+			return true
 		}
-		cleaned = append(cleaned, line)
-		blank = false
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if visit(child) {
+				return true
+			}
+		}
+		return false
 	}
-	for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
-		cleaned = cleaned[:len(cleaned)-1]
+	for _, node := range nodes {
+		if visit(node) {
+			return true
+		}
 	}
-	return strings.Join(cleaned, "\n")
+	return false
 }
 
 // Links extracts hyperlinks in document order. Relative URLs are resolved
@@ -92,42 +96,434 @@ func Links(fragment, baseURL string) []Link {
 	return links
 }
 
-func writeLinkedNode(b *strings.Builder, node *xhtml.Node, base *url.URL, links *[]Link) {
-	if node.Type == xhtml.ElementNode {
-		switch node.Data {
-		case "script", "style", "noscript", "svg":
-			return
-		case "a":
-			if target, ok := nodeHTTPURL(node, base); ok {
-				index := len(*links)
-				label := strings.Join(strings.Fields(visibleNodeText(node)), " ")
-				if label == "" {
-					label = target
-				}
-				*links = append(*links, Link{Text: label, URL: target})
-				b.WriteString(linkMarker(index, "start"))
-				for child := node.FirstChild; child != nil; child = child.NextSibling {
-					writeLinkedNode(b, child, base, links)
-				}
-				b.WriteString(linkMarker(index, "end"))
-				return
+type textRenderer struct {
+	b            strings.Builder
+	base         *url.URL
+	links        *[]Link
+	headingBase  int
+	listDepth    int
+	pendingSpace bool
+}
+
+func newTextRenderer(base *url.URL, links *[]Link, baseHeading int) *textRenderer {
+	return &textRenderer{base: base, links: links, headingBase: baseHeading}
+}
+
+func (r *textRenderer) render(nodes []*xhtml.Node) string {
+	for _, node := range nodes {
+		r.renderNode(node)
+	}
+	r.pendingSpace = false
+	return strings.Trim(strings.TrimRight(r.b.String(), " \t"), "\n")
+}
+
+func (r *textRenderer) renderNode(node *xhtml.Node) {
+	if node.Type == xhtml.TextNode {
+		r.writeText(node.Data)
+		return
+	}
+	if node.Type != xhtml.ElementNode || isHiddenElement(node.Data) {
+		return
+	}
+
+	switch node.Data {
+	case "a":
+		r.renderLink(node)
+	case "br":
+		r.lineBreak()
+	case "hr":
+		r.blockBreak()
+		r.writeLiteral("────────")
+		r.blockBreak()
+	case "p", "div", "article", "section", "header", "footer", "main", "aside", "figure", "figcaption":
+		r.renderBlock(node)
+	case "h1", "h2", "h3", "h4", "h5", "h6":
+		r.renderHeading(node)
+	case "ul":
+		r.renderList(node, false)
+	case "ol":
+		r.renderList(node, true)
+	case "li":
+		r.renderLooseListItem(node)
+	case "blockquote":
+		r.renderBlockquote(node)
+	case "pre":
+		r.renderPre(node)
+	case "code":
+		r.renderInlineCode(node)
+	case "table":
+		r.renderTable(node)
+	case "img":
+		r.renderImage(node)
+	default:
+		r.renderChildren(node)
+	}
+}
+
+func (r *textRenderer) renderChildren(node *xhtml.Node) {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		r.renderNode(child)
+	}
+}
+
+func (r *textRenderer) renderBlock(node *xhtml.Node) {
+	r.blockBreak()
+	r.renderChildren(node)
+	r.blockBreak()
+}
+
+func (r *textRenderer) renderHeading(node *xhtml.Node) {
+	level, _ := strconv.Atoi(strings.TrimPrefix(node.Data, "h"))
+	level = min(6, max(2, level-r.headingBase+2))
+	r.blockBreak()
+	r.writeLiteral(strings.Repeat("#", level) + " ")
+	r.renderChildren(node)
+	r.blockBreak()
+}
+
+func (r *textRenderer) renderList(node *xhtml.Node, ordered bool) {
+	nested := r.listDepth > 0
+	if nested {
+		r.lineBreak()
+	} else {
+		r.blockBreak()
+	}
+	r.listDepth++
+	number := listStart(node)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != xhtml.ElementNode || child.Data != "li" {
+			continue
+		}
+		marker := "• "
+		if ordered {
+			marker = strconv.Itoa(number) + ". "
+			number++
+		}
+		r.renderListItem(child, marker)
+	}
+	r.listDepth--
+	if nested {
+		r.lineBreak()
+	} else {
+		r.blockBreak()
+	}
+}
+
+func listStart(node *xhtml.Node) int {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, "start") {
+			if start, err := strconv.Atoi(strings.TrimSpace(attr.Val)); err == nil {
+				return start
 			}
 		}
 	}
-	writeNodeShallow(b, node)
+	return 1
+}
+
+func (r *textRenderer) renderListItem(node *xhtml.Node, marker string) {
+	r.lineBreak()
+	r.writeLiteral(strings.Repeat("  ", max(0, r.listDepth-1)) + marker)
+	paragraphs := 0
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		writeLinkedNode(b, child, base, links)
+		if child.Type == xhtml.ElementNode && child.Data == "p" {
+			if paragraphs > 0 {
+				r.blockBreak()
+				r.writeLiteral(strings.Repeat("  ", r.listDepth))
+			}
+			r.renderChildren(child)
+			paragraphs++
+			continue
+		}
+		r.renderNode(child)
 	}
-	writeNodeEnd(b, node)
+	r.lineBreak()
+}
+
+func (r *textRenderer) renderLooseListItem(node *xhtml.Node) {
+	r.blockBreak()
+	r.writeLiteral("• ")
+	r.renderChildren(node)
+	r.blockBreak()
+}
+
+func (r *textRenderer) renderBlockquote(node *xhtml.Node) {
+	content := r.renderSubtree(node)
+	if content == "" {
+		return
+	}
+	r.blockBreak()
+	for index, line := range strings.Split(content, "\n") {
+		if index > 0 {
+			r.lineBreak()
+		}
+		r.writeLiteral("│")
+		if line != "" {
+			r.writeLiteral(" " + line)
+		}
+	}
+	r.blockBreak()
+}
+
+func (r *textRenderer) renderPre(node *xhtml.Node) {
+	content := strings.ReplaceAll(rawNodeText(node), "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	content = strings.Trim(content, "\n")
+	if content == "" {
+		return
+	}
+	r.blockBreak()
+	for index, line := range strings.Split(content, "\n") {
+		if index > 0 {
+			r.lineBreak()
+		}
+		r.writeLiteral("    " + line)
+	}
+	r.blockBreak()
+}
+
+func (r *textRenderer) renderInlineCode(node *xhtml.Node) {
+	content := strings.Join(strings.Fields(rawNodeText(node)), " ")
+	if content != "" {
+		r.writeLiteral("`" + content + "`")
+	}
+}
+
+func (r *textRenderer) renderTable(node *xhtml.Node) {
+	rows := tableRows(node)
+	if len(rows) == 0 {
+		return
+	}
+	r.blockBreak()
+
+	firstCells := tableCells(rows[0])
+	hasHeaders := len(firstCells) > 0
+	for _, cell := range firstCells {
+		hasHeaders = hasHeaders && cell.Data == "th"
+	}
+	if hasHeaders && len(rows) > 1 {
+		headings := make([]string, len(firstCells))
+		for index, cell := range firstCells {
+			headings[index] = r.tableCellText(cell, false)
+			if headings[index] == "" {
+				headings[index] = fmt.Sprintf("Column %d", index+1)
+			}
+		}
+		for rowIndex, row := range rows[1:] {
+			if rowIndex > 0 {
+				r.blockBreak()
+			}
+			for index, cell := range tableCells(row) {
+				label := fmt.Sprintf("Column %d", index+1)
+				if index < len(headings) {
+					label = headings[index]
+				}
+				r.writeLiteral(label + ": ")
+				r.writeLiteral(r.tableCellText(cell, true))
+				r.lineBreak()
+			}
+		}
+		r.blockBreak()
+		return
+	}
+
+	for index, row := range rows {
+		if index > 0 {
+			r.lineBreak()
+		}
+		values := make([]string, 0, len(tableCells(row)))
+		for _, cell := range tableCells(row) {
+			values = append(values, r.tableCellText(cell, true))
+		}
+		if len(values) > 0 {
+			r.writeLiteral("| " + strings.Join(values, " | ") + " |")
+		}
+	}
+	r.blockBreak()
+}
+
+func (r *textRenderer) tableCellText(node *xhtml.Node, preserveLinks bool) string {
+	links := r.links
+	if !preserveLinks {
+		links = nil
+	}
+	sub := newTextRenderer(r.base, links, r.headingBase)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		sub.renderNode(child)
+	}
+	return strings.Join(strings.Fields(sub.render(nil)), " ")
+}
+
+func (r *textRenderer) renderImage(node *xhtml.Node) {
+	alt := nodeAttribute(node, "alt")
+	if alt == "" {
+		alt = nodeAttribute(node, "title")
+	}
+	if alt == "" {
+		r.writeText("[Image]")
+		return
+	}
+	r.writeText("[Image: " + strings.Join(strings.Fields(alt), " ") + "]")
+}
+
+func (r *textRenderer) renderLink(node *xhtml.Node) {
+	target, ok := nodeHTTPURL(node, r.base)
+	if !ok || r.links == nil {
+		r.renderChildren(node)
+		return
+	}
+	label := strings.Join(strings.Fields(visibleNodeText(node)), " ")
+	if label == "" {
+		label = target
+	}
+	index := len(*r.links)
+	*r.links = append(*r.links, Link{Text: label, URL: target})
+	r.flushSpace()
+	r.b.WriteString(linkMarker(index, "start"))
+	r.renderChildren(node)
+	r.flushSpace()
+	r.b.WriteString(linkMarker(index, "end"))
+}
+
+func (r *textRenderer) renderSubtree(node *xhtml.Node) string {
+	sub := newTextRenderer(r.base, r.links, r.headingBase)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		sub.renderNode(child)
+	}
+	return sub.render(nil)
+}
+
+func (r *textRenderer) writeText(value string) {
+	value = strings.ReplaceAll(value, "\u00a0", " ")
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		if value != "" && r.b.Len() > 0 && !strings.HasSuffix(r.b.String(), "\n") {
+			r.pendingSpace = true
+		}
+		return
+	}
+	runes := []rune(value)
+	leading := unicode.IsSpace(runes[0])
+	trailing := unicode.IsSpace(runes[len(runes)-1])
+	if leading || r.pendingSpace {
+		r.pendingSpace = true
+		r.flushSpace()
+	}
+	r.b.WriteString(strings.Join(fields, " "))
+	r.pendingSpace = trailing
+}
+
+func (r *textRenderer) writeLiteral(value string) {
+	r.flushSpace()
+	r.b.WriteString(value)
+}
+
+func (r *textRenderer) flushSpace() {
+	if r.pendingSpace && r.b.Len() > 0 && !strings.HasSuffix(r.b.String(), "\n") && !strings.HasSuffix(r.b.String(), " ") {
+		r.b.WriteByte(' ')
+	}
+	r.pendingSpace = false
+}
+
+func (r *textRenderer) lineBreak() {
+	r.pendingSpace = false
+	if r.b.Len() > 0 && !strings.HasSuffix(r.b.String(), "\n") {
+		r.b.WriteByte('\n')
+	}
+}
+
+func (r *textRenderer) blockBreak() {
+	r.pendingSpace = false
+	if r.b.Len() == 0 {
+		return
+	}
+	trailing := 0
+	for index := len(r.b.String()) - 1; index >= 0 && r.b.String()[index] == '\n'; index-- {
+		trailing++
+	}
+	for trailing < 2 {
+		r.b.WriteByte('\n')
+		trailing++
+	}
+}
+
+func headingBase(nodes []*xhtml.Node) int {
+	base := 7
+	var walk func(*xhtml.Node)
+	walk = func(node *xhtml.Node) {
+		if node.Type == xhtml.ElementNode && len(node.Data) == 2 && node.Data[0] == 'h' && node.Data[1] >= '1' && node.Data[1] <= '6' {
+			base = min(base, int(node.Data[1]-'0'))
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	for _, node := range nodes {
+		walk(node)
+	}
+	if base == 7 {
+		return 1
+	}
+	return base
+}
+
+func tableRows(table *xhtml.Node) []*xhtml.Node {
+	var rows []*xhtml.Node
+	var walk func(*xhtml.Node)
+	walk = func(node *xhtml.Node) {
+		if node != table && node.Type == xhtml.ElementNode && node.Data == "table" {
+			return
+		}
+		if node.Type == xhtml.ElementNode && node.Data == "tr" {
+			rows = append(rows, node)
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(table)
+	return rows
+}
+
+func tableCells(row *xhtml.Node) []*xhtml.Node {
+	var cells []*xhtml.Node
+	for child := row.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.ElementNode && (child.Data == "th" || child.Data == "td") {
+			cells = append(cells, child)
+		}
+	}
+	return cells
+}
+
+func rawNodeText(node *xhtml.Node) string {
+	var b strings.Builder
+	var walk func(*xhtml.Node)
+	walk = func(current *xhtml.Node) {
+		if current.Type == xhtml.ElementNode && isHiddenElement(current.Data) {
+			return
+		}
+		if current.Type == xhtml.TextNode {
+			b.WriteString(current.Data)
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return b.String()
+}
+
+func nodeAttribute(node *xhtml.Node, name string) string {
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, name) {
+			return strings.TrimSpace(attr.Val)
+		}
+	}
+	return ""
 }
 
 func nodeHTTPURL(node *xhtml.Node, base *url.URL) (string, bool) {
-	for _, attr := range node.Attr {
-		if strings.EqualFold(attr.Key, "href") {
-			return resolveHTTPURL(strings.TrimSpace(attr.Val), base)
-		}
-	}
-	return "", false
+	return resolveHTTPURL(nodeAttribute(node, "href"), base)
 }
 
 func linkMarker(index int, edge string) string {
@@ -193,6 +589,9 @@ func visibleNodeText(node *xhtml.Node) string {
 		if current.Type == xhtml.ElementNode && isHiddenElement(current.Data) {
 			return
 		}
+		if current.Type == xhtml.ElementNode && current.Data == "img" {
+			b.WriteString(nodeAttribute(current, "alt"))
+		}
 		if current.Type == xhtml.TextNode {
 			b.WriteString(current.Data)
 		}
@@ -204,62 +603,13 @@ func visibleNodeText(node *xhtml.Node) string {
 	return b.String()
 }
 
-func writeNode(b *strings.Builder, node *xhtml.Node) {
-	if node.Type == xhtml.ElementNode && isHiddenElement(node.Data) {
-		return
-	}
-	writeNodeShallow(b, node)
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		writeNode(b, child)
-	}
-	writeNodeEnd(b, node)
-}
-
-func writeNodeShallow(b *strings.Builder, node *xhtml.Node) {
-	if node.Type == xhtml.ElementNode {
-		switch node.Data {
-		case "br", "hr":
-			newline(b)
-		case "li":
-			newline(b)
-			b.WriteString("• ")
-		}
-	}
-	if node.Type == xhtml.TextNode {
-		text := strings.Map(func(r rune) rune {
-			if unicode.IsSpace(r) && r != '\n' {
-				return ' '
-			}
-			return r
-		}, node.Data)
-		b.WriteString(text)
-	}
-}
-
-func writeNodeEnd(b *strings.Builder, node *xhtml.Node) {
-	if node.Type == xhtml.ElementNode {
-		switch node.Data {
-		case "p", "div", "article", "section", "header", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "li", "ul", "ol", "blockquote", "pre", "table", "tr":
-			newline(b)
-			newline(b)
-		}
-	}
-}
-
 func isHiddenElement(name string) bool {
 	switch name {
-	case "script", "style", "noscript", "svg":
+	case "script", "style", "noscript", "svg", "template":
 		return true
 	default:
 		return false
 	}
-}
-
-func newline(b *strings.Builder) {
-	if b.Len() == 0 || strings.HasSuffix(b.String(), "\n") {
-		return
-	}
-	b.WriteByte('\n')
 }
 
 func stripTags(s string) string {
