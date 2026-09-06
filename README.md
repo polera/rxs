@@ -73,7 +73,10 @@ The database lives in the platform user-data directory by default (`$XDG_DATA_HO
 
 Press `a`, type or paste an HTTP or HTTPS feed URL with your terminal's paste
 shortcut, and press Enter. The feed is fetched immediately. Downloaded article
-text is searchable and available after the network goes away.
+text is searchable and available after the network goes away. LaTeX expressions in
+article text are detected automatically and shown with terminal-friendly Unicode
+symbols; common inline and display delimiters and MathJax `math/tex` blocks are
+supported.
 
 Each time the interactive UI starts, rxs loads saved subscriptions and articles
 first, then refreshes every feed automatically. The refresh runs concurrently

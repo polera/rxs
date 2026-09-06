@@ -114,7 +114,8 @@ func (r *textRenderer) render(nodes []*xhtml.Node) string {
 		r.renderNode(node)
 	}
 	r.pendingSpace = false
-	return strings.Trim(strings.TrimRight(r.b.String(), " \t"), "\n")
+	content := strings.Trim(strings.TrimRight(r.b.String(), " \t"), "\n")
+	return LaTeX(content)
 }
 
 func (r *textRenderer) renderNode(node *xhtml.Node) {
@@ -122,7 +123,14 @@ func (r *textRenderer) renderNode(node *xhtml.Node) {
 		r.writeText(node.Data)
 		return
 	}
-	if node.Type != xhtml.ElementNode || isHiddenElement(node.Data) {
+	if node.Type != xhtml.ElementNode {
+		return
+	}
+	if node.Data == "script" && isLaTeXScript(node) {
+		r.renderLaTeXScript(node)
+		return
+	}
+	if isHiddenElement(node.Data) {
 		return
 	}
 
@@ -286,6 +294,33 @@ func (r *textRenderer) renderInlineCode(node *xhtml.Node) {
 	if content != "" {
 		r.writeLiteral("`" + content + "`")
 	}
+}
+
+func (r *textRenderer) renderLaTeXScript(node *xhtml.Node) {
+	var source strings.Builder
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.TextNode {
+			source.WriteString(child.Data)
+		}
+	}
+	content := strings.TrimSpace(source.String())
+	if content == "" {
+		return
+	}
+	display := strings.Contains(strings.ToLower(nodeAttribute(node, "type")), "mode=display") ||
+		strings.EqualFold(nodeAttribute(node, "mode"), "display")
+	if display {
+		r.blockBreak()
+	}
+	r.writeLiteral(renderLaTeXExpression(content, display))
+	if display {
+		r.blockBreak()
+	}
+}
+
+func isLaTeXScript(node *xhtml.Node) bool {
+	kind := strings.ToLower(nodeAttribute(node, "type"))
+	return strings.HasPrefix(kind, "math/tex") || strings.HasPrefix(kind, "application/x-tex")
 }
 
 func (r *textRenderer) renderTable(node *xhtml.Node) {
