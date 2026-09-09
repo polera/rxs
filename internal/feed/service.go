@@ -51,17 +51,30 @@ func NewService(repository Repository, client Fetcher, options ...Option) *Servi
 }
 
 func (s *Service) Refresh(ctx context.Context, id int64) domain.RefreshResult {
+	if err := ctx.Err(); err != nil {
+		return domain.RefreshResult{FeedID: id, Err: err}
+	}
 	source, err := s.repository.Feed(ctx, id)
 	if err != nil {
 		return domain.RefreshResult{FeedID: id, Err: fmt.Errorf("load feed: %w", err)}
 	}
 	result := domain.RefreshResult{FeedID: id, Title: source.Title}
+	if ctx.Err() != nil {
+		result.Err = ctx.Err()
+		return result
+	}
 	parsed, err := s.client.Fetch(ctx, source)
+	if ctx.Err() != nil {
+		result.Err = ctx.Err()
+		return result
+	}
 	if err == nil {
 		result.Added, err = s.repository.ApplyRefresh(ctx, id, parsed)
 	}
 	if err != nil {
-		_ = s.repository.RecordRefreshError(ctx, id, err)
+		if ctx.Err() == nil {
+			_ = s.repository.RecordRefreshError(ctx, id, err)
+		}
 		result.Err = err
 		return result
 	}
@@ -90,6 +103,9 @@ func (s *Service) enrich(ctx context.Context, feedID int64, result *domain.Refre
 			return
 		}
 		content, extractErr := s.extractor.Extract(ctx, entry.URL)
+		if ctx.Err() != nil {
+			return
+		}
 		if extractErr == nil {
 			extractErr = article.Validate(entry.Entry, content)
 		}
@@ -112,6 +128,8 @@ func (s *Service) enrich(ctx context.Context, feedID int64, result *domain.Refre
 
 // RefreshAll uses a bounded worker pool. Store writes remain serialized by the
 // repository's single SQLite connection while network requests run concurrently.
+// Cancellation stops admission and joins workers and the producer. The returned
+// slice contains only attempted feeds, not placeholders for canceled queued jobs.
 func (s *Service) RefreshAll(ctx context.Context, feeds []domain.Feed, workers int) []domain.RefreshResult {
 	if workers < 1 {
 		workers = 1
@@ -130,11 +148,16 @@ func (s *Service) RefreshAll(ctx context.Context, feeds []domain.Feed, workers i
 		go func() {
 			defer group.Done()
 			for id := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				results <- s.Refresh(ctx, id)
 			}
 		}()
 	}
+	group.Add(1)
 	go func() {
+		defer group.Done()
 		defer close(jobs)
 		for _, source := range feeds {
 			select {

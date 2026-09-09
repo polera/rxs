@@ -126,3 +126,27 @@ func TestFetchRejectsMalformedAndOversizedFeeds(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchExactResponseLimit(t *testing.T) {
+	for _, fixture := range []string{"rss.xml", "atom.xml", "feed.json"} {
+		t.Run(fixture, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join("..", "..", "testdata", "feeds", fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := NewClient("test")
+			client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(http.StatusOK, body, nil), nil
+			})
+			client.maxBytes = int64(len(body))
+			parsed, err := client.Fetch(context.Background(), domain.Feed{URL: "https://example.test/feed"})
+			if err != nil || len(parsed.Entries) != 1 {
+				t.Fatalf("exact limit: entries = %d, error = %v", len(parsed.Entries), err)
+			}
+			client.maxBytes--
+			if _, err := client.Fetch(context.Background(), domain.Feed{URL: "https://example.test/feed"}); err == nil || !strings.Contains(err.Error(), "response limit") {
+				t.Fatalf("one byte over limit: %v", err)
+			}
+		})
+	}
+}

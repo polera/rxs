@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m Model) View() tea.View {
@@ -52,6 +52,12 @@ func (m Model) View() tea.View {
 		statusStyle = m.styles.Warning
 	}
 	statusText := m.status
+	if m.canceledImportCount > 0 {
+		if statusText != "" {
+			statusText += " | "
+		}
+		statusText += fmt.Sprintf("Import canceled after %d subscription(s)", m.canceledImportCount)
+	}
 	if m.busy {
 		statusText = "◌ " + statusText
 	}
@@ -75,13 +81,13 @@ func (m Model) footerText(keyText string) string {
 	}
 
 	progress := fmt.Sprintf("%.0f%% read", m.reader.ScrollPercent()*100)
-	progressWidth := utf8.RuneCountInString(progress)
+	progressWidth := ansi.StringWidth(progress)
 	if width <= progressWidth {
 		return truncate(progress, width)
 	}
 
 	keys := truncate(keyText, width-progressWidth-1)
-	padding := width - utf8.RuneCountInString(keys) - progressWidth
+	padding := width - ansi.StringWidth(keys) - progressWidth
 	return keys + strings.Repeat(" ", padding) + progress
 }
 
@@ -93,31 +99,63 @@ func (m Model) newView(content string) tea.View {
 }
 
 func (m Model) feedsView(width int) string {
-	var lines []string
 	selectedLine := min(m.feedCursor, 1)
-	total := 0
-	for _, source := range m.allFeeds {
-		total += source.UnreadCount
-	}
-	lines = append(lines, m.menuLine(0, "All", total, width), m.menuLine(1, "Starred", -1, width), "")
+	lineCount := 3
 	for i, source := range m.feeds {
 		if m.feedCursor == i+2 {
-			selectedLine = len(lines)
+			selectedLine = lineCount
 		}
-		line := m.menuLine(i+2, source.Title, source.UnreadCount, width)
+		lineCount++
 		if source.LastError != "" {
-			line += m.styles.Dim.Render(" !")
-			lines = append(lines, line, m.styles.Danger.Render("  "+truncate(source.LastError, max(1, width-2))))
-			continue
+			lineCount++
 		}
-		lines = append(lines, line)
 	}
-	if len(m.feeds) == 0 && len(m.allFeeds) == 0 {
-		lines = append(lines, m.styles.Dim.Render("Press a to add a feed."))
-	} else if len(m.feeds) == 0 {
-		lines = append(lines, m.styles.Dim.Render("No matching feeds."))
+	if len(m.feeds) == 0 {
+		lineCount++
 	}
-	return strings.Join(visibleListLines(lines, selectedLine, m.listViewHeight()), "\n")
+	start, end := visibleListRange(lineCount, selectedLine, m.listViewHeight())
+	lines := make([]string, 0, end-start)
+	if start == 0 {
+		total := 0
+		for _, source := range m.allFeeds {
+			total += source.UnreadCount
+		}
+		lines = append(lines, m.menuLine(0, "All", total, width))
+	}
+	if start <= 1 && end > 1 {
+		lines = append(lines, m.menuLine(1, "Starred", -1, width))
+	}
+	if start <= 2 && end > 2 {
+		lines = append(lines, "")
+	}
+	lineNumber := 3
+	for i, source := range m.feeds {
+		if lineNumber >= end {
+			break
+		}
+		if lineNumber >= start {
+			line := m.menuLine(i+2, source.Title, source.UnreadCount, width)
+			if source.LastError != "" {
+				line += m.styles.Dim.Render(" !")
+			}
+			lines = append(lines, line)
+		}
+		lineNumber++
+		if source.LastError != "" {
+			if lineNumber >= start && lineNumber < end {
+				lines = append(lines, m.styles.Danger.Render("  "+truncate(source.LastError, max(1, width-2))))
+			}
+			lineNumber++
+		}
+	}
+	if len(m.feeds) == 0 && start <= 3 && end > 3 {
+		message := "No matching feeds."
+		if len(m.allFeeds) == 0 {
+			message = "Press a to add a feed."
+		}
+		lines = append(lines, m.styles.Dim.Render(message))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) menuLine(index int, label string, count, width int) string {
@@ -125,7 +163,7 @@ func (m Model) menuLine(index int, label string, count, width int) string {
 	if count >= 0 {
 		countText = fmt.Sprintf(" %d", count)
 	}
-	line := truncate(label, max(1, width-utf8.RuneCountInString(countText))) + countText
+	line := truncate(label, max(1, width-ansi.StringWidth(countText))) + countText
 	if m.active == feedsPane && m.feedCursor == index {
 		return m.styles.Selected.Width(max(1, width)).Render(line)
 	}
@@ -136,11 +174,14 @@ func (m Model) entriesView(width int) string {
 	if len(m.entries) == 0 {
 		return m.styles.Dim.Render("No matching articles.")
 	}
-	lines := make([]string, 0, len(m.entries)*2)
-	selectedLine := 0
-	for i, entry := range m.entries {
-		if i == m.entryCursor {
-			selectedLine = len(lines)
+	start, end := visibleListRange(len(m.entries)*2, m.entryCursor*2, m.listViewHeight())
+	lines := make([]string, 0, end-start)
+	for lineNumber := start; lineNumber < end; lineNumber++ {
+		i := lineNumber / 2
+		entry := m.entries[i]
+		if lineNumber%2 != 0 {
+			lines = append(lines, m.styles.Dim.Render("  "+truncate(entry.FeedTitle+" · "+relativeTime(entry.PublishedAt), max(1, width-2))))
+			continue
 		}
 		marker := "  "
 		if !entry.Read {
@@ -150,13 +191,13 @@ func (m Model) entriesView(width int) string {
 		if entry.Starred {
 			star = " ★"
 		}
-		line := truncate(marker+entry.Title, max(1, width-utf8.RuneCountInString(star))) + star
+		line := truncate(marker+entry.Title, max(1, width-ansi.StringWidth(star))) + star
 		if m.active == articlesPane && i == m.entryCursor {
 			line = m.styles.Selected.Width(max(1, width)).Render(line)
 		}
-		lines = append(lines, line, m.styles.Dim.Render("  "+truncate(entry.FeedTitle+" · "+relativeTime(entry.PublishedAt), max(1, width-2))))
+		lines = append(lines, line)
 	}
-	return strings.Join(visibleListLines(lines, selectedLine, m.listViewHeight()), "\n")
+	return strings.Join(lines, "\n")
 }
 
 // listViewHeight is the pane's inner height after its border and title line.
@@ -164,17 +205,17 @@ func (m Model) listViewHeight() int {
 	return max(1, m.height-5)
 }
 
-// visibleListLines keeps the selected row and its detail line in view. Both
+// visibleListRange keeps the selected row and its detail line in view. Both
 // feed errors and article metadata occupy the line immediately after a row.
-func visibleListLines(lines []string, selectedLine, height int) []string {
-	if len(lines) <= height {
-		return lines
-	}
+func visibleListRange(lineCount, selectedLine, height int) (int, int) {
 	height = max(1, height)
-	selectedEnd := min(selectedLine+1, len(lines)-1)
-	start := clamp(selectedEnd-height+1, 0, len(lines)-height)
+	if lineCount <= height {
+		return 0, lineCount
+	}
+	selectedEnd := min(selectedLine+1, lineCount-1)
+	start := clamp(selectedEnd-height+1, 0, lineCount-height)
 	start = min(start, selectedLine)
-	return lines[start : start+height]
+	return start, start + height
 }
 
 func (m Model) overlayView() string {
@@ -210,10 +251,14 @@ func (m Model) overlayView() string {
 }
 
 func relativeTime(t time.Time) string {
+	return relativeTimeAt(t, time.Now())
+}
+
+func relativeTimeAt(t, now time.Time) string {
 	if t.IsZero() {
 		return "unknown date"
 	}
-	delta := time.Since(t)
+	delta := now.Sub(t)
 	if delta < 0 {
 		return t.Format("Jan 2, 2006")
 	}
@@ -235,14 +280,7 @@ func truncate(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	runes := []rune(value)
-	if len(runes) <= width {
-		return value
-	}
-	if width == 1 {
-		return "…"
-	}
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, width, "…")
 }
 
 func clamp(value, low, high int) int {

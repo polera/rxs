@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -238,7 +239,11 @@ func (m *Model) move(delta int) {
 			m.setPersistentStatus("Loading articles…", false)
 		}
 	case articlesPane:
-		m.entryCursor = clamp(m.entryCursor+delta, 0, len(m.entries)-1)
+		target := clamp(m.entryCursor+delta, 0, len(m.entries)-1)
+		if target == m.entryCursor {
+			return
+		}
+		m.entryCursor = target
 		m.readerEntry = nil
 		m.syncReader()
 	case readerPane:
@@ -272,6 +277,9 @@ func (m *Model) moveToListBoundary(end bool) bool {
 		target := 0
 		if end {
 			target = max(0, len(m.entries)-1)
+		}
+		if target == m.entryCursor {
+			return false
 		}
 		m.entryCursor = target
 		m.readerEntry = nil
@@ -336,15 +344,16 @@ func (m Model) enterReader() (tea.Model, tea.Cmd) {
 	entry := &m.entries[m.entryCursor]
 	opened := *entry
 	m.readerEntry = &opened
-	m.readerReachedBottom = false
 	m.readerSearch = ""
 	m.readerMatches = nil
 	m.readerMatchCursor = -1
+	m.readerLinkCursor = -1
 	m.pendingG = false
-	m.setReaderContent(opened)
 	m.reader.GotoTop()
 	m.active = readerPane
 	m.resizeReader()
+	// Geometry changes are not reading progress; latch only the restored view.
+	m.readerReachedBottom = false
 	m.restoreReaderProgress(opened.ReadingProgress)
 	m.checkReaderReachedBottom()
 	return m, nil
@@ -435,14 +444,22 @@ func (m Model) refreshAll() (tea.Model, tea.Cmd) {
 	}
 	m.busy = true
 	m.setPersistentStatus(fmt.Sprintf("Refreshing %d feed(s)…", len(m.allFeeds)), false)
-	feeds := append([]domain.Feed(nil), m.allFeeds...)
-	return m, func() tea.Msg {
-		return refreshMsg{results: m.refresher.RefreshAll(context.Background(), feeds, 4)}
-	}
+	feeds := slices.Clone(m.allFeeds)
+	return m, m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return refreshMsg{canceled: true}
+		}
+		results := m.refresher.RefreshAll(ctx, feeds, 4)
+		return refreshMsg{results: results, canceled: ctx.Err() != nil}
+	})
 }
 
 func (m Model) refreshOneCmd(id int64) tea.Cmd {
-	return func() tea.Msg {
-		return refreshMsg{results: []domain.RefreshResult{m.refresher.Refresh(context.Background(), id)}}
-	}
+	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return refreshMsg{canceled: true}
+		}
+		result := m.refresher.Refresh(ctx, id)
+		return refreshMsg{results: []domain.RefreshResult{result}, canceled: ctx.Err() != nil}
+	})
 }

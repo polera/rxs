@@ -4,8 +4,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"time"
 
 	"charm.land/bubbles/v2/textinput"
@@ -68,6 +70,7 @@ const (
 type ColorSchemeSaver func(string) error
 
 type Model struct {
+	lifetime   *lifecycle
 	store      Store
 	refresher  Refresher
 	browser    Browser
@@ -106,14 +109,16 @@ type Model struct {
 	schemeOriginal      ui.Styles
 	input               textinput.Model
 	reader              viewport.Model
+	readerCache         readerRenderCache
 
-	width, height      int
-	busy               bool
-	status             string
-	errStatus          bool
-	warningStatus      string
-	statusGeneration   uint64
-	statusTimerPending bool
+	width, height       int
+	busy                bool
+	status              string
+	errStatus           bool
+	warningStatus       string
+	statusGeneration    uint64
+	statusTimerPending  bool
+	canceledImportCount int
 
 	markReadOnScroll bool
 }
@@ -136,8 +141,14 @@ type addMsg struct {
 	feed domain.Feed
 	err  error
 }
-type deleteMsg struct{ err error }
-type refreshMsg struct{ results []domain.RefreshResult }
+type deleteMsg struct {
+	feedID int64
+	err    error
+}
+type refreshMsg struct {
+	results  []domain.RefreshResult
+	canceled bool
+}
 type browserMsg struct {
 	target string
 	err    error
@@ -206,7 +217,8 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 	input.SetWidth(60)
 	reader := viewport.New()
 	model := Model{
-		store: store, refresher: refresher, browser: browser, tuiBrowser: tuiBrowser,
+		lifetime: newLifecycle(),
+		store:    store, refresher: refresher, browser: browser, tuiBrowser: tuiBrowser,
 		styles: styles, input: input, reader: reader, width: 100, height: 30,
 		readerLinkCursor:  -1,
 		readerMatchCursor: -1,
@@ -244,10 +256,16 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		if msg.initial {
 			m.initialRefreshPending = true
 		}
+		if m.quitting {
+			return m, nil
+		}
 		if msg.generation != m.loadGeneration || msg.filter != m.filter {
 			return m.finishInitialRefresh()
 		}
 		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				return m.finishInitialRefresh()
+			}
 			m.setError(msg.err)
 			return m, nil
 		}
@@ -278,6 +296,12 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		return m.finishInitialRefresh()
 	case addMsg:
 		m.busy = false
+		if m.quitting {
+			return m, nil
+		}
+		if errors.Is(msg.err, context.Canceled) {
+			return m, m.loadCmdPreserving()
+		}
 		if msg.err != nil {
 			m.setError(msg.err)
 			return m.finishInitialRefresh()
@@ -288,20 +312,39 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 	case deleteMsg:
 		m.deleting = false
 		m.busy = false
+		if msg.err == nil {
+			// A committed deletion must survive a failed quit, even if its
+			// completion arrives while follow-up loads are suppressed.
+			m.allFeeds = slices.DeleteFunc(m.allFeeds, func(feed domain.Feed) bool { return feed.ID == msg.feedID })
+			m.entries = slices.DeleteFunc(m.entries, func(entry domain.Entry) bool { return entry.FeedID == msg.feedID })
+			m.applyFeedSearch()
+			m.resetFeedSelection()
+			m.active = feedsPane
+			m.loadGeneration++
+			m.lifetime.cancelLoad()
+		}
+		if m.quitting {
+			return m, nil
+		}
+		if errors.Is(msg.err, context.Canceled) {
+			return m, m.loadCmdPreserving()
+		}
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
 			m.setStatus("Feed removed", false)
-			m.feedCursor, m.entryCursor = 0, 0
-			m.filter.FeedID, m.filter.StarredOnly = 0, false
-			m.readerEntry = nil
-			m.active = feedsPane
 		}
 		return m, m.loadCmd()
 	case stateMsg:
 		return m.completeStateWrite(msg)
 	case refreshMsg:
 		m.busy = false
+		if m.quitting {
+			return m, nil
+		}
+		if msg.canceled {
+			return m, m.loadCmdPreserving()
+		}
 		failures, added, expanded, expansionFailures := 0, 0, 0, 0
 		var lastErr error
 		for _, result := range msg.results {
@@ -334,14 +377,33 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case importMsg:
 		m.busy = false
+		m.canceledImportCount = 0
+		if errors.Is(msg.err, context.Canceled) {
+			// Keep partial success separate from the primary status so either
+			// completion order preserves a failed state write's explanation.
+			m.canceledImportCount = msg.count
+			if m.quitting {
+				return m, nil
+			}
+			return m, m.loadCmdPreserving()
+		}
+		if m.quitting {
+			return m, nil
+		}
 		if msg.err != nil {
-			m.setError(msg.err)
+			m.setStatus(fmt.Sprintf("Imported %d subscription(s) before import failed: %v", msg.count, msg.err), true)
 		} else {
 			m.setStatus(fmt.Sprintf("Imported %d subscription(s)", msg.count), false)
 		}
 		return m, m.loadCmdPreserving()
 	case exportMsg:
 		m.busy = false
+		if m.quitting {
+			return m, nil
+		}
+		if errors.Is(msg.err, context.Canceled) {
+			return m.finishInitialRefresh()
+		}
 		if msg.err != nil {
 			m.setError(msg.err)
 		} else {
@@ -394,5 +456,6 @@ func (m *Model) setPersistentStatus(message string, isError bool) {
 }
 
 func (m *Model) clearStatus() {
+	m.canceledImportCount = 0
 	m.setPersistentStatus("", false)
 }

@@ -2,6 +2,7 @@
 package feed
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -93,7 +94,7 @@ func (c *Client) Fetch(ctx context.Context, source domain.Feed) (domain.ParsedFe
 	}
 	// A parser is cheap and kept request-local so RefreshAll can parse safely
 	// across its worker pool without relying on undocumented shared state.
-	parsed, err := gofeed.NewParser().ParseString(string(body))
+	parsed, err := gofeed.NewParser().Parse(bytes.NewReader(body))
 	if err != nil {
 		return result, fmt.Errorf("parse %s: %w", source.URL, err)
 	}

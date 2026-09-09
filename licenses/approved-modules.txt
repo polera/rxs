@@ -34,6 +34,7 @@ github.com/ncruces/go-strftime@v1.0.0 MIT
 github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec BSD-3-Clause
 github.com/rivo/uniseg@v0.4.7 MIT
 github.com/xo/terminfo@v1.0.0 MIT
+golang.org/x/mod@v0.41.0 BSD-3-Clause
 golang.org/x/net@v0.58.0 BSD-3-Clause
 golang.org/x/sync@v0.22.0 BSD-3-Clause
 golang.org/x/sys@v0.47.0 BSD-3-Clause

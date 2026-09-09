@@ -16,20 +16,25 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 const (
-	latestReleaseURL = "https://api.github.com/repos/polera/rxs/releases/latest"
-	maxAPIResponse   = 1 << 20
-	maxChecksumFile  = 1 << 20
-	maxArchive       = 100 << 20
-	maxBinary        = 100 << 20
+	latestReleaseURL   = "https://api.github.com/repos/polera/rxs/releases/latest"
+	maxAPIResponse     = 1 << 20
+	maxChecksumFile    = 1 << 20
+	maxArchive         = 100 << 20
+	maxBinary          = 100 << 20
+	maxExpandedArchive = 200 << 20
+	httpTimeout        = 15 * time.Second
 )
 
 var ErrDevelopmentVersion = errors.New("the installed version is not a released semantic version")
+
+var errArchiveTooLarge = errors.New("decompressed release archive is too large")
 
 type Client struct {
 	HTTPClient *http.Client
@@ -61,7 +66,7 @@ type releaseResponse struct {
 
 func NewClient() *Client {
 	return &Client{
-		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		HTTPClient: &http.Client{Timeout: httpTimeout},
 		LatestURL:  latestReleaseURL,
 		GOOS:       runtime.GOOS,
 		GOARCH:     runtime.GOARCH,
@@ -74,21 +79,9 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 		return Release{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "rxs-updater")
-	response, err := c.httpClient().Do(req)
+	body, err := c.readHTTP(req, maxAPIResponse, "check GitHub releases: ", "read GitHub release: ", "GitHub release response is too large")
 	if err != nil {
-		return Release{}, fmt.Errorf("check GitHub releases: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("check GitHub releases: HTTP %s", response.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAPIResponse+1))
-	if err != nil {
-		return Release{}, fmt.Errorf("read GitHub release: %w", err)
-	}
-	if len(body) > maxAPIResponse {
-		return Release{}, errors.New("GitHub release response is too large")
+		return Release{}, err
 	}
 	var releaseData releaseResponse
 	if err = json.Unmarshal(body, &releaseData); err != nil {
@@ -129,7 +122,7 @@ func Available(installed, latest string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("invalid latest version %q", latest)
 	}
-	return compare(installedVersion, latestVersion) < 0, nil
+	return semver.Compare(installedVersion, latestVersion) < 0, nil
 }
 
 func (c *Client) Upgrade(ctx context.Context, installed, executable string) (Result, error) {
@@ -146,6 +139,9 @@ func (c *Client) Upgrade(ctx context.Context, installed, executable string) (Res
 // UpgradeTo installs a release already returned by Latest. This keeps an
 // interactive offer tied to the exact release the user accepted.
 func (c *Client) UpgradeTo(ctx context.Context, installed, executable string, release Release) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	available, err := Available(installed, release.Version)
 	if err != nil {
 		return Result{}, err
@@ -166,11 +162,14 @@ func (c *Client) UpgradeTo(ctx context.Context, installed, executable string, re
 	if err != nil {
 		return Result{}, err
 	}
-	got := sha256.Sum256(archive)
-	if !bytes.Equal(got[:], want) {
+	hash := sha256.New()
+	if _, err = io.Copy(hash, contextReader{ctx, bytes.NewReader(archive)}); err != nil {
+		return Result{}, fmt.Errorf("checksum release archive: %w", err)
+	}
+	if !bytes.Equal(hash.Sum(nil), want) {
 		return Result{}, fmt.Errorf("checksum mismatch for %s", release.ArchiveName)
 	}
-	binary, err := extractBinary(archive, release.ArchiveName)
+	binary, err := extractBinary(ctx, archive, release.ArchiveName)
 	if err != nil {
 		return Result{}, err
 	}
@@ -183,7 +182,7 @@ func (c *Client) UpgradeTo(ctx context.Context, installed, executable string, re
 	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
 		executable = resolved
 	}
-	if err = replaceExecutable(executable, binary); err != nil {
+	if err = replaceExecutable(ctx, executable, binary); err != nil {
 		return Result{}, err
 	}
 	result.Updated = true
@@ -195,21 +194,26 @@ func (c *Client) download(ctx context.Context, url string, limit int64) ([]byte,
 	if err != nil {
 		return nil, err
 	}
+	return c.readHTTP(req, limit, "", "", "download is too large")
+}
+
+// Keep request/read error context at the call sites while sharing the HTTP policy.
+func (c *Client) readHTTP(req *http.Request, limit int64, requestPrefix, readPrefix, sizeMessage string) ([]byte, error) {
 	req.Header.Set("User-Agent", "rxs-updater")
 	response, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s%w", requestPrefix, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %s", response.Status)
+		return nil, fmt.Errorf("%sHTTP %s", requestPrefix, response.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s%w", readPrefix, err)
 	}
 	if int64(len(body)) > limit {
-		return nil, errors.New("download is too large")
+		return nil, errors.New(sizeMessage)
 	}
 	return body, nil
 }
@@ -218,7 +222,7 @@ func (c *Client) httpClient() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return http.DefaultClient
+	return &http.Client{Timeout: httpTimeout}
 }
 
 func (c *Client) latestURL() string {
@@ -257,13 +261,19 @@ func checksumFor(data []byte, name string) ([]byte, error) {
 	return nil, fmt.Errorf("checksums.txt has no entry for %s", name)
 }
 
-func extractBinary(archive []byte, archiveName string) ([]byte, error) {
+func extractBinary(ctx context.Context, archive []byte, archiveName string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.HasSuffix(archiveName, ".zip") {
 		reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 		if err != nil {
 			return nil, fmt.Errorf("open release archive: %w", err)
 		}
 		for _, file := range reader.File {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if filepath.Base(file.Name) != "rxs.exe" || file.FileInfo().IsDir() {
 				continue
 			}
@@ -274,7 +284,7 @@ func extractBinary(archive []byte, archiveName string) ([]byte, error) {
 			if openErr != nil {
 				return nil, fmt.Errorf("open binary in release archive: %w", openErr)
 			}
-			binary, readErr := io.ReadAll(io.LimitReader(entry, maxBinary+1))
+			binary, readErr := io.ReadAll(io.LimitReader(contextReader{ctx, entry}, maxBinary+1))
 			closeErr := entry.Close()
 			if readErr != nil {
 				return nil, fmt.Errorf("read binary in release archive: %w", readErr)
@@ -290,12 +300,24 @@ func extractBinary(archive []byte, archiveName string) ([]byte, error) {
 		return nil, errors.New("release archive does not contain rxs.exe")
 	}
 
-	gzipArchive, err := gzip.NewReader(bytes.NewReader(archive))
+	gzipArchive, err := gzip.NewReader(contextReader{ctx, bytes.NewReader(archive)})
 	if err != nil {
 		return nil, fmt.Errorf("open release archive: %w", err)
 	}
 	defer gzipArchive.Close()
-	reader := tar.NewReader(gzipArchive)
+	return extractTarBinary(ctx, gzipArchive, maxExpandedArchive)
+}
+
+func extractTarBinary(ctx context.Context, source io.Reader, limit int64) (binary []byte, err error) {
+	// Limit below tar.Reader so skipped bodies, padding and hidden PAX/GNU
+	// metadata all count. The extra byte distinguishes a full budget from EOF.
+	bounded := &io.LimitedReader{R: contextReader{ctx, source}, N: limit + 1}
+	defer func() {
+		if bounded.N == 0 {
+			binary, err = nil, errArchiveTooLarge
+		}
+	}()
+	reader := tar.NewReader(bounded)
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
@@ -304,25 +326,59 @@ func extractBinary(archive []byte, archiveName string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open release archive: %w", err)
 		}
-		if filepath.Base(header.Name) != "rxs" || header.Typeflag != tar.TypeReg {
+		if binary != nil || filepath.Base(header.Name) != "rxs" || header.Typeflag != tar.TypeReg {
 			continue
 		}
 		if header.Size > maxBinary {
 			return nil, errors.New("binary in release archive is too large")
 		}
-		binary, err := io.ReadAll(io.LimitReader(reader, maxBinary+1))
+		binary, err = io.ReadAll(io.LimitReader(reader, maxBinary+1))
 		if err != nil {
 			return nil, fmt.Errorf("read binary in release archive: %w", err)
 		}
 		if len(binary) > maxBinary {
 			return nil, errors.New("binary in release archive is too large")
 		}
-		return binary, nil
 	}
-	return nil, errors.New("release archive does not contain rxs")
+	// TAR EOF can precede gzip EOF. Drain through the same budget to validate
+	// the gzip trailer and count trailing data, including concatenated members.
+	if _, err := io.Copy(io.Discard, bounded); err != nil {
+		return nil, fmt.Errorf("finish release archive: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if binary == nil {
+		return nil, errors.New("release archive does not contain rxs")
+	}
+	return binary, nil
 }
 
-func writeReplacement(path string, binary []byte) (tempPath string, err error) {
+// Local reads are cancellable between bounded chunks, not during a blocking OS
+// call. Recheck after Read so cancellation at EOF cannot silently commit.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(p) > 32<<10 {
+		p = p[:32<<10]
+	}
+	n, err := r.reader.Read(p)
+	if canceled := r.ctx.Err(); canceled != nil {
+		return n, canceled
+	}
+	return n, err
+}
+
+func writeReplacement(ctx context.Context, path string, binary io.Reader) (tempPath string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", fmt.Errorf("inspect current executable: %w", err)
@@ -333,14 +389,20 @@ func writeReplacement(path string, binary []byte) (tempPath string, err error) {
 		return "", fmt.Errorf("create upgrade beside %s: %w", path, err)
 	}
 	tempPath = temp.Name()
-	if _, err = temp.Write(binary); err == nil {
+	if _, err = io.Copy(temp, contextReader{ctx, binary}); err == nil {
 		err = temp.Chmod(info.Mode().Perm())
+	}
+	if err == nil {
+		err = ctx.Err()
 	}
 	if err == nil {
 		err = temp.Sync()
 	}
 	if closeErr := temp.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil {
+		err = ctx.Err()
 	}
 	if err != nil {
 		_ = os.Remove(tempPath)
@@ -349,100 +411,12 @@ func writeReplacement(path string, binary []byte) (tempPath string, err error) {
 	return tempPath, nil
 }
 
-type semanticVersion struct {
-	major, minor, patch uint64
-	pre                 []string
-}
-
-func parseVersion(value string) (semanticVersion, error) {
-	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
-	if build := strings.IndexByte(value, '+'); build >= 0 {
-		value = value[:build]
+func parseVersion(value string) (string, error) {
+	value = "v" + strings.TrimPrefix(strings.TrimSpace(value), "v")
+	core, _, _ := strings.Cut(value, "-")
+	core, _, _ = strings.Cut(core, "+")
+	if strings.Count(core, ".") != 2 || !semver.IsValid(value) {
+		return "", errors.New("expected a valid major.minor.patch semantic version")
 	}
-	var pre []string
-	if dash := strings.IndexByte(value, '-'); dash >= 0 {
-		pre = strings.Split(value[dash+1:], ".")
-		value = value[:dash]
-		if len(pre) == 0 {
-			return semanticVersion{}, errors.New("invalid prerelease")
-		}
-	}
-	parts := strings.Split(value, ".")
-	if len(parts) != 3 {
-		return semanticVersion{}, errors.New("expected major.minor.patch")
-	}
-	numbers := make([]uint64, 3)
-	for i, part := range parts {
-		if part == "" || (len(part) > 1 && part[0] == '0') {
-			return semanticVersion{}, errors.New("invalid numeric version")
-		}
-		n, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
-			return semanticVersion{}, err
-		}
-		numbers[i] = n
-	}
-	for _, identifier := range pre {
-		if identifier == "" {
-			return semanticVersion{}, errors.New("invalid prerelease")
-		}
-		if len(identifier) > 1 && identifier[0] == '0' {
-			if _, err := strconv.ParseUint(identifier, 10, 64); err == nil {
-				return semanticVersion{}, errors.New("invalid numeric prerelease")
-			}
-		}
-		for _, r := range identifier {
-			if !(r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
-				return semanticVersion{}, errors.New("invalid prerelease")
-			}
-		}
-	}
-	return semanticVersion{major: numbers[0], minor: numbers[1], patch: numbers[2], pre: pre}, nil
-}
-
-func compare(a, b semanticVersion) int {
-	for _, pair := range [][2]uint64{{a.major, b.major}, {a.minor, b.minor}, {a.patch, b.patch}} {
-		if pair[0] < pair[1] {
-			return -1
-		}
-		if pair[0] > pair[1] {
-			return 1
-		}
-	}
-	if len(a.pre) == 0 && len(b.pre) > 0 {
-		return 1
-	}
-	if len(a.pre) > 0 && len(b.pre) == 0 {
-		return -1
-	}
-	for i := 0; i < len(a.pre) && i < len(b.pre); i++ {
-		if a.pre[i] == b.pre[i] {
-			continue
-		}
-		an, aerr := strconv.ParseUint(a.pre[i], 10, 64)
-		bn, berr := strconv.ParseUint(b.pre[i], 10, 64)
-		if aerr == nil && berr == nil {
-			if an < bn {
-				return -1
-			}
-			return 1
-		}
-		if aerr == nil {
-			return -1
-		}
-		if berr == nil {
-			return 1
-		}
-		if a.pre[i] < b.pre[i] {
-			return -1
-		}
-		return 1
-	}
-	if len(a.pre) < len(b.pre) {
-		return -1
-	}
-	if len(a.pre) > len(b.pre) {
-		return 1
-	}
-	return 0
+	return value, nil
 }

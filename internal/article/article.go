@@ -16,15 +16,23 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	readability "codeberg.org/readeck/go-readability/v2"
 	"github.com/polera/rxs/internal/render"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/charset"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
 	maxResponseBytes    int64 = 5 << 20
+	maxDecodedBytes     int64 = 5 << 20
 	requestTimeout            = 15 * time.Second
 	maxDocumentElements       = 100_000
+	maxDocumentTags           = 100_000
 )
 
 var nonPublicPrefixes = []netip.Prefix{
@@ -121,35 +129,202 @@ func (e *clientExtractor) Extract(ctx context.Context, rawURL string) (Content, 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return Content{}, fmt.Errorf("fetch article: server returned %s", response.Status)
 	}
-	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	contentType := response.Header.Get("Content-Type")
+	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil || (mediaType != "text/html" && mediaType != "application/xhtml+xml") {
 		return Content{}, fmt.Errorf("article response is not HTML")
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(contextReader{ctx, response.Body}, maxResponseBytes+1))
 	if err != nil {
 		return Content{}, fmt.Errorf("read article: %w", err)
 	}
 	if int64(len(body)) > maxResponseBytes {
 		return Content{}, fmt.Errorf("article exceeds %d MiB response limit", maxResponseBytes/(1<<20))
 	}
-	pageURL := response.Request.URL
+	return extractArticle(ctx, body, contentType, response.Request.URL)
+}
+
+func extractArticle(ctx context.Context, body []byte, contentType string, pageURL *url.URL) (Content, error) {
+	body, err := decodeArticle(ctx, body, contentType)
+	if err != nil {
+		return Content{}, err
+	}
+	if err := preflightArticle(ctx, body); err != nil {
+		return Content{}, err
+	}
+	doc, err := html.Parse(contextReader{ctx, bytes.NewReader(body)})
+	if err != nil {
+		return Content{}, fmt.Errorf("parse article DOM: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Content{}, err
+	}
 	parser := readability.NewParser()
 	parser.MaxElemsToParse = maxDocumentElements
-	extracted, err := parser.Parse(bytes.NewReader(body), pageURL)
+	// The DOM is request-local; mutation avoids a second DOM and decoder pass.
+	// Readability has no context API. Stage checks do not impose a CPU deadline.
+	extracted, err := parser.ParseAndMutate(doc, pageURL)
 	if err != nil {
 		return Content{}, fmt.Errorf("extract readable article: %w", err)
 	}
-	var html bytes.Buffer
-	if err := extracted.RenderHTML(&html); err != nil {
+	if err := ctx.Err(); err != nil {
+		return Content{}, err
+	}
+	var output bytes.Buffer
+	if err := extracted.RenderHTML(&output); err != nil {
 		return Content{}, fmt.Errorf("render readable article: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Content{}, err
 	}
 	content := Content{
 		Title:     strings.TrimSpace(extracted.Title()),
-		HTML:      html.String(),
+		HTML:      output.String(),
 		SourceURL: pageURL.String(),
 	}
 	content.Text = render.Text(content.HTML)
+	if err := ctx.Err(); err != nil {
+		return Content{}, err
+	}
 	return content, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.r.Read(p)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func decodeArticle(ctx context.Context, body []byte, contentType string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The library only sniffs 1024 bytes. Preserve undeclared UTF-8 even when
+	// non-ASCII text appears later in the already response-bounded buffer.
+	// Meta declarations are also reported as uncertain, so check them separately.
+	if _, name, certain := charset.DetermineEncoding(body, contentType); !certain && name == "windows-1252" && utf8.Valid(body) && !hasMetaCharset(body) {
+		contentType = "text/html; charset=utf-8"
+	}
+	reader, err := charset.NewReader(contextReader{ctx, bytes.NewReader(body)}, contentType)
+	if err != nil {
+		return nil, fmt.Errorf("decode article charset: %w", err)
+	}
+	// Preserve go-shiori/dom's NFD -> literal soft-hyphen removal -> NFC policy.
+	// Entity-encoded soft hyphens are still left for the HTML parser to decode.
+	// Cap both decoder output and normalized input, so removal cannot hide expansion.
+	decoded := &io.LimitedReader{R: reader, N: maxDecodedBytes + 1}
+	normalized := transform.NewReader(decoded, transform.Chain(
+		norm.NFD, runes.Remove(runes.Predicate(func(r rune) bool { return r == '\u00ad' })), norm.NFC,
+	))
+	body, err = io.ReadAll(io.LimitReader(contextReader{ctx, normalized}, maxDecodedBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("decode article: %w", err)
+	}
+	if decoded.N == 0 || int64(len(body)) > maxDecodedBytes {
+		return nil, fmt.Errorf("article exceeds %d MiB decoded-input limit", maxDecodedBytes/(1<<20))
+	}
+	return body, nil
+}
+
+// hasMetaCharset follows charset.DetermineEncoding's 1024-byte meta prescan,
+// including first-attribute wins, attribute ordering, and the http-equiv pragma.
+// Its API does not distinguish a meta declaration from the Windows-1252 fallback.
+func hasMetaCharset(body []byte) bool {
+	z := html.NewTokenizer(bytes.NewReader(body[:min(len(body), 1024)]))
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return false
+		case html.StartTagToken, html.SelfClosingTagToken:
+			token := z.Token()
+			if token.Data != "meta" {
+				continue
+			}
+			seen := make(map[string]bool)
+			recognized, needsPragma, pragma := false, false, false
+			for _, attr := range token.Attr {
+				if seen[attr.Key] {
+					continue
+				}
+				seen[attr.Key] = true
+				switch attr.Key {
+				case "http-equiv":
+					pragma = strings.EqualFold(attr.Val, "content-type")
+				case "charset":
+					encoding, _ := charset.Lookup(attr.Val)
+					recognized, needsPragma = encoding != nil, false
+				case "content":
+					if !recognized {
+						encoding, _ := charset.Lookup(metaContentCharset(strings.ToLower(attr.Val)))
+						if encoding != nil {
+							recognized, needsPragma = true, true
+						}
+					}
+				}
+			}
+			if recognized && (!needsPragma || pragma) {
+				return true
+			}
+		}
+	}
+}
+
+func metaContentCharset(value string) string {
+	const space = " \t\n\f\r"
+	for {
+		_, rest, found := strings.Cut(value, "charset")
+		if !found {
+			return ""
+		}
+		value = strings.TrimLeft(rest, space)
+		if !strings.HasPrefix(value, "=") {
+			continue
+		}
+		value = strings.TrimLeft(value[1:], space)
+		if value == "" {
+			return ""
+		}
+		if quote := value[0]; quote == '\'' || quote == '"' {
+			if end := strings.IndexByte(value[1:], quote); end >= 0 {
+				return value[1 : end+1]
+			}
+			return ""
+		}
+		if end := strings.IndexAny(value, space+";"); end >= 0 {
+			return value[:end]
+		}
+		return value
+	}
+}
+
+func preflightArticle(ctx context.Context, body []byte) error {
+	// Count every literal '<', including comments, attributes, and script text.
+	// A standalone tokenizer cannot mirror tree-builder states: comments or quotes
+	// inside scripts can otherwise swallow real tags. This intentionally rejects
+	// some low-element pages. Keep readability's separate DOM element limit too.
+	tags := 0
+	for len(body) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n := min(len(body), 16<<10)
+		tags += bytes.Count(body[:n], []byte{'<'})
+		if tags > maxDocumentTags {
+			return fmt.Errorf("article exceeds %d tag preflight limit", maxDocumentTags)
+		}
+		body = body[n:]
+	}
+	return ctx.Err()
 }
 
 type destinationValidator struct {
@@ -188,9 +363,17 @@ type safeDialer struct {
 	resolver interface {
 		LookupIP(context.Context, string, string) ([]net.IP, error)
 	}
+	dial func(context.Context, string, string) (net.Conn, error)
 }
 
 func (d safeDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	// Transport may detach the request deadline from its dial context. Bound DNS
+	// and all attempts together even when the caller supplies no deadline.
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, fmt.Errorf("parse destination address: %w", err)
@@ -205,9 +388,24 @@ func (d safeDialer) DialContext(ctx context.Context, network, address string) (n
 		}
 	}
 	var dialErrors []error
-	var dialer net.Dialer
-	for _, ip := range ips {
-		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	dial := d.dial
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
+	deadline, _ := ctx.Deadline()
+	for i, ip := range ips {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		attempt, cancelAttempt := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(ips)-i))
+		connection, err := dial(attempt, network, net.JoinHostPort(ip.String(), port))
+		cancelAttempt()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if connection != nil {
+				_ = connection.Close()
+			}
+			return nil, ctxErr
+		}
 		if err == nil {
 			return connection, nil
 		}

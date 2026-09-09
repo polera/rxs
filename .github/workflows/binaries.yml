@@ -23,8 +23,12 @@ permissions:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -36,9 +40,21 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test ./...
+        run: go test -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race detector
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
+
+      - name: Bounded parser fuzzing
+        if: runner.os == 'Linux'
+        run: make fuzz
 
       - name: Check dependency licenses
+        if: runner.os == 'Linux'
         run: make license-check
 
   build:

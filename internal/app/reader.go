@@ -5,6 +5,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -12,14 +13,29 @@ import (
 	"github.com/polera/rxs/internal/render"
 )
 
+// Only presentation inputs are cached, never the actionable reader snapshot.
+// Wrapped text and spans are replaced rather than mutated across Model copies.
+type readerRenderCache struct {
+	entry     domain.Entry
+	width     int
+	dateLabel string
+	wrapped   string
+	linkSpans [][]readerMatch
+	query     string
+	pattern   *regexp.Regexp
+}
+
 func (m *Model) syncReader() {
 	if m.active == readerPane && m.readerEntry != nil {
 		m.setReaderContent(*m.readerEntry)
 		return
 	}
 	if len(m.entries) == 0 {
+		m.readerCache = readerRenderCache{}
 		m.readerLinks = nil
 		m.readerLinkCursor = -1
+		m.readerMatches = nil
+		m.readerMatchCursor = -1
 		m.reader.SetContent("No article selected.")
 		return
 	}
@@ -27,30 +43,63 @@ func (m *Model) syncReader() {
 }
 
 func (m *Model) setReaderContent(entry domain.Entry) {
-	_, m.readerLinks = render.TextWithLinks(entry.HTML, entry.URL, nil)
-	m.readerLinkCursor = -1
 	m.renderReaderContent(entry)
 }
 
 func (m *Model) renderReaderContent(entry domain.Entry) {
+	m.cacheReaderContent(entry, time.Now())
+	m.paintReaderContent()
+}
+
+func (m *Model) cacheReaderContent(entry domain.Entry, now time.Time) {
+	entry.Read, entry.Starred, entry.ReadingProgress = false, false, 0
+	entry.EnrichmentInputHash = ""
 	date := entry.PublishedAt
 	if date.IsZero() {
 		date = entry.UpdatedAt
 	}
-	metadata := []string{entry.Author, relativeTime(date), entry.FeedTitle}
+	dateLabel := relativeTimeAt(date, now)
+	cached := &m.readerCache
+	rebuild := cached.wrapped == "" || cached.entry != entry || cached.width != m.readerTextWidth() || cached.dateLabel != dateLabel
+	if cached.entry.ID != entry.ID || cached.entry.HTML != entry.HTML || cached.entry.URL != entry.URL {
+		m.readerLinkCursor = -1
+	}
+	if rebuild {
+		cached.entry, cached.width = entry, m.readerTextWidth()
+		cached.dateLabel = dateLabel
+		cached.wrapped = m.wrapReaderContent(entry, dateLabel)
+		cached.linkSpans = findReaderLinkSpans(cached.wrapped, m.readerLinks)
+	}
+	queryChanged := cached.query != m.readerSearch
+	if queryChanged {
+		cached.query = m.readerSearch
+		cached.pattern = nil
+		if cached.query != "" {
+			cached.pattern, _ = regexp.Compile("(?i)" + regexp.QuoteMeta(cached.query))
+		}
+	}
+	if rebuild || queryChanged {
+		m.readerMatches = findReaderMatches(cached.wrapped, cached.pattern)
+	}
+	if len(m.readerMatches) == 0 {
+		m.readerMatchCursor = -1
+	} else {
+		m.readerMatchCursor = clamp(m.readerMatchCursor, 0, len(m.readerMatches)-1)
+	}
+}
+
+func (m *Model) wrapReaderContent(entry domain.Entry, dateLabel string) string {
+	metadata := []string{entry.Author, dateLabel, entry.FeedTitle}
 	if entry.ContentSource == domain.ContentSourceFullArticle {
 		metadata = append(metadata, "full text")
 	}
 	meta := strings.Trim(strings.Join(metadata, " · "), " ·")
 	content := entry.Text
+	m.readerLinks = nil
 	if entry.HTML != "" {
-		content, _ = render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
+		content, m.readerLinks = render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
 			linkID := fmt.Sprintf("id=rxs-link-%d", index)
-			style := m.styles.Link.Hyperlink(link.URL, linkID)
-			if index == m.readerLinkCursor {
-				style = m.styles.Selected.Hyperlink(link.URL, linkID)
-			}
-			return style.Render(text)
+			return m.styles.Link.Hyperlink(link.URL, linkID).Render(text)
 		})
 	}
 	if content == "" {
@@ -58,12 +107,19 @@ func (m *Model) renderReaderContent(entry domain.Entry) {
 	}
 	content = m.styleReaderHeadings(content)
 	article := m.styles.Selected.Render(entry.Title) + "\n" + m.styles.Dim.Render(meta) + "\n\n" + content
-	wrapped := lipgloss.Wrap(article, m.readerTextWidth(), " ")
-	m.readerMatches = findReaderMatches(wrapped, m.readerSearch)
-	if len(m.readerMatches) == 0 {
-		m.readerMatchCursor = -1
-	} else {
-		m.readerMatchCursor = clamp(m.readerMatchCursor, 0, len(m.readerMatches)-1)
+	return lipgloss.Wrap(article, m.readerTextWidth(), " ")
+}
+
+func (m *Model) paintReaderContent() {
+	wrapped := m.readerCache.wrapped
+	if m.readerLinkCursor >= 0 && m.readerLinkCursor < len(m.readerCache.linkSpans) {
+		lines := strings.Split(wrapped, "\n")
+		for _, span := range m.readerCache.linkSpans[m.readerLinkCursor] {
+			lines[span.line] = styleReaderRanges(lines[span.line], []lipgloss.Range{lipgloss.NewRange(span.start, span.end, m.styles.Selected)})
+		}
+		wrapped = strings.Join(lines, "\n")
+	}
+	if len(m.readerMatches) > 0 {
 		wrapped = m.highlightReaderMatches(wrapped, m.readerMatches, m.readerMatchCursor)
 	}
 	m.reader.SetContent(wrapped)
@@ -87,8 +143,9 @@ func (m Model) styleReaderHeadings(content string) string {
 func (m *Model) searchReader(query string) {
 	m.readerSearch = query
 	m.readerMatchCursor = 0
-	m.renderReaderContent(m.currentReaderEntry())
+	m.cacheReaderContent(m.currentReaderEntry(), time.Now())
 	if len(m.readerMatches) == 0 {
+		m.paintReaderContent()
 		m.setStatus(fmt.Sprintf("No matches for %q", query), true)
 		return
 	}
@@ -118,18 +175,14 @@ func (m *Model) showReaderMatch() {
 		return
 	}
 	match := m.readerMatches[m.readerMatchCursor]
-	m.renderReaderContent(m.currentReaderEntry())
+	m.paintReaderContent()
 	m.reader.EnsureVisible(match.line, match.start, match.end)
 	m.setStatus(fmt.Sprintf("Match %d/%d: %s", m.readerMatchCursor+1, len(m.readerMatches), m.readerSearch), false)
 	m.checkReaderReachedBottom()
 }
 
-func findReaderMatches(content, query string) []readerMatch {
-	if query == "" {
-		return nil
-	}
-	pattern, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
-	if err != nil {
+func findReaderMatches(content string, pattern *regexp.Regexp) []readerMatch {
+	if pattern == nil {
 		return nil
 	}
 	var matches []readerMatch
@@ -158,9 +211,49 @@ func (m Model) highlightReaderMatches(content string, matches []readerMatch, sel
 		byLine[match.line] = append(byLine[match.line], lipgloss.NewRange(match.start, match.end, style))
 	}
 	for line, ranges := range byLine {
-		lines[line] = lipgloss.StyleRanges(lines[line], ranges...)
+		lines[line] = styleReaderRanges(lines[line], ranges)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// StyleRanges replaces highlighted text with stripped text. Split ranges at
+// OSC boundaries and explicitly retain the hyperlink on each replacement.
+func styleReaderRanges(line string, ranges []lipgloss.Range) string {
+	var linked []lipgloss.Range
+	var state byte
+	var url, params, previousURL, previousParams string
+	column, current, previous := 0, 0, -1
+	for remaining := line; len(remaining) > 0; {
+		sequence, width, n, next := ansi.DecodeSequence(remaining, state, nil)
+		remaining, state = remaining[n:], next
+		if strings.HasPrefix(sequence, "\x1b]8;") {
+			payload := strings.TrimSuffix(strings.TrimSuffix(sequence[4:], "\a"), "\x1b\\")
+			params, url, _ = strings.Cut(payload, ";")
+		}
+		if width == 0 {
+			continue
+		}
+		for current < len(ranges) && ranges[current].End <= column {
+			current++
+		}
+		if current == len(ranges) {
+			break
+		}
+		if ranges[current].Start < column+width {
+			if previous == current && previousURL == url && previousParams == params && linked[len(linked)-1].End == column {
+				linked[len(linked)-1].End = column + width
+			} else {
+				style := ranges[current].Style
+				if url != "" {
+					style = style.Hyperlink(url, params)
+				}
+				linked = append(linked, lipgloss.NewRange(column, column+width, style))
+			}
+			previous, previousURL, previousParams = current, url, params
+		}
+		column += width
+	}
+	return lipgloss.StyleRanges(line, linked...)
 }
 
 func (m *Model) selectReaderLink(delta int) {
@@ -178,22 +271,56 @@ func (m *Model) selectReaderLink(delta int) {
 	}
 	link := m.readerLinks[m.readerLinkCursor]
 	m.setStatus(fmt.Sprintf("Link %d/%d: %s", m.readerLinkCursor+1, len(m.readerLinks), link.Text), false)
-	m.renderReaderContent(m.currentReaderEntry())
-	m.ensureReaderLinkVisible(m.readerLinkCursor, link)
+	m.paintReaderContent()
+	m.ensureReaderLinkVisible(m.readerLinkCursor)
 	m.checkReaderReachedBottom()
 }
 
-func (m *Model) ensureReaderLinkVisible(index int, link render.Link) {
-	marker := ansi.SetHyperlink(link.URL, fmt.Sprintf("id=rxs-link-%d", index))
-	for lineNumber, line := range strings.Split(m.reader.GetContent(), "\n") {
-		markerAt := strings.Index(line, marker)
-		if markerAt < 0 {
-			continue
-		}
-		start := lipgloss.Width(ansi.Strip(line[:markerAt]))
-		m.reader.EnsureVisible(lineNumber, start, start+1)
-		return
+func (m *Model) ensureReaderLinkVisible(index int) {
+	if spans := m.readerCache.linkSpans[index]; len(spans) > 0 {
+		span := spans[0]
+		m.reader.EnsureVisible(span.line, span.start, span.start+1)
 	}
+}
+
+// OSC identities survive wrapping (including links split across lines). Decode
+// once so Tab uses cell ranges without reparsing HTML or searching styled text.
+func findReaderLinkSpans(content string, links []render.Link) [][]readerMatch {
+	if len(links) == 0 {
+		return nil
+	}
+	markers := make(map[string]int, len(links))
+	for index, link := range links {
+		markers[ansi.SetHyperlink(link.URL, fmt.Sprintf("id=rxs-link-%d", index))] = index
+	}
+	spans := make([][]readerMatch, len(links))
+	active, line, column := -1, 0, 0
+	var state byte
+	for len(content) > 0 {
+		sequence, width, n, next := ansi.DecodeSequence(content, state, nil)
+		content, state = content[n:], next
+		switch {
+		case sequence == "\n":
+			line++
+			column = 0
+		case strings.HasPrefix(sequence, "\x1b]8;"):
+			active = -1
+			if index, ok := markers[sequence]; ok {
+				active = index
+			}
+		case width > 0:
+			if active >= 0 {
+				previous := len(spans[active]) - 1
+				if previous >= 0 && spans[active][previous].line == line && spans[active][previous].end == column {
+					spans[active][previous].end += width
+				} else {
+					spans[active] = append(spans[active], readerMatch{line: line, start: column, end: column + width})
+				}
+			}
+			column += width
+		}
+	}
+	return spans
 }
 
 func (m Model) currentReaderEntry() domain.Entry {
@@ -228,7 +355,7 @@ func (m *Model) resizeReader() {
 	// Content is wrapped before it reaches the viewport so lines break at word
 	// boundaries instead of being sliced at an arbitrary terminal column.
 	entry := m.currentReaderEntry()
-	if entry.ID != 0 || entry.Title != "" || entry.Text != "" {
+	if entry.ID != 0 || entry.Title != "" || entry.Text != "" || entry.HTML != "" {
 		m.renderReaderContent(entry)
 	}
 	m.checkReaderReachedBottom()

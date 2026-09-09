@@ -32,7 +32,7 @@ func Text(fragment string) string {
 	if err != nil {
 		return strings.TrimSpace(html.UnescapeString(stripTags(fragment)))
 	}
-	renderer := newTextRenderer(nil, nil, headingBase(nodes))
+	renderer := newTextRenderer(nil, nil, nil, headingBase(nodes))
 	return renderer.render(nodes)
 }
 
@@ -49,9 +49,10 @@ func TextWithLinks(fragment, baseURL string, formatter LinkFormatter) (string, [
 	}
 	base, _ := url.Parse(strings.TrimSpace(baseURL))
 	var links []Link
-	renderer := newTextRenderer(base, &links, headingBase(nodes))
+	var fallbacks []bool
+	renderer := newTextRenderer(base, &links, &fallbacks, headingBase(nodes))
 	content := renderer.render(nodes)
-	return formatLinkMarkers(content, links, formatter), links
+	return formatLinkMarkers(content, links, fallbacks, formatter), links
 }
 
 func parseFragment(fragment string) ([]*xhtml.Node, error) {
@@ -100,22 +101,51 @@ type textRenderer struct {
 	b            strings.Builder
 	base         *url.URL
 	links        *[]Link
+	fallbacks    *[]bool
 	headingBase  int
 	listDepth    int
 	pendingSpace bool
+	mathStart    int
+	mathRegions  [][2]int
+	disableMath  bool
 }
 
-func newTextRenderer(base *url.URL, links *[]Link, baseHeading int) *textRenderer {
-	return &textRenderer{base: base, links: links, headingBase: baseHeading}
+func newTextRenderer(base *url.URL, links *[]Link, fallbacks *[]bool, baseHeading int) *textRenderer {
+	return &textRenderer{base: base, links: links, fallbacks: fallbacks, headingBase: baseHeading}
 }
 
 func (r *textRenderer) render(nodes []*xhtml.Node) string {
 	for _, node := range nodes {
 		r.renderNode(node)
 	}
+	r.endMathRegion()
 	r.pendingSpace = false
-	content := strings.Trim(strings.TrimRight(r.b.String(), " \t"), "\n")
-	return LaTeX(content)
+	content := r.b.String()
+	if !r.disableMath && len(r.mathRegions) > 0 {
+		var out strings.Builder
+		out.Grow(len(content))
+		pos := 0
+		for _, region := range r.mathRegions {
+			out.WriteString(content[pos:region[0]])
+			text, markers := splitMathMarkers(content[region[0]:region[1]])
+			out.WriteString(latex(text, markers))
+			pos = region[1]
+		}
+		out.WriteString(content[pos:])
+		content = out.String()
+	}
+	return strings.Trim(strings.TrimRight(content, " \t"), "\n")
+}
+
+// Inline HTML (including links and br) shares a prose region. Block boundaries and
+// literal/already-rendered output end it, so code and subtrees are never parsed
+// as math and delimiters cannot pair across separate blocks or table cells.
+func (r *textRenderer) endMathRegion() {
+	end := r.b.Len()
+	if strings.ContainsAny(r.b.String()[r.mathStart:end], `$\`) {
+		r.mathRegions = append(r.mathRegions, [2]int{r.mathStart, end})
+	}
+	r.mathStart = end
 }
 
 func (r *textRenderer) renderNode(node *xhtml.Node) {
@@ -138,7 +168,10 @@ func (r *textRenderer) renderNode(node *xhtml.Node) {
 	case "a":
 		r.renderLink(node)
 	case "br":
-		r.lineBreak()
+		r.pendingSpace = false
+		if r.b.Len() > 0 && !strings.HasSuffix(r.b.String(), "\n") {
+			r.b.WriteByte('\n')
+		}
 	case "hr":
 		r.blockBreak()
 		r.writeLiteral("────────")
@@ -163,6 +196,8 @@ func (r *textRenderer) renderNode(node *xhtml.Node) {
 		r.renderTable(node)
 	case "img":
 		r.renderImage(node)
+	case "object":
+		r.renderObject(node)
 	default:
 		r.renderChildren(node)
 	}
@@ -381,7 +416,7 @@ func (r *textRenderer) tableCellText(node *xhtml.Node, preserveLinks bool) strin
 	if !preserveLinks {
 		links = nil
 	}
-	sub := newTextRenderer(r.base, links, r.headingBase)
+	sub := newTextRenderer(r.base, links, r.fallbacks, r.headingBase)
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
 		sub.renderNode(child)
 	}
@@ -390,6 +425,18 @@ func (r *textRenderer) tableCellText(node *xhtml.Node, preserveLinks bool) strin
 
 func (r *textRenderer) renderImage(node *xhtml.Node) {
 	alt := nodeAttribute(node, "alt")
+	_, _, delimiterDisplay, delimited := mathFallbackDelimiter(alt)
+	if (isMathAsset(node, "src") || delimited) && alt != "" {
+		display := hasClass(node, "align-center") || delimiterDisplay
+		if display {
+			r.blockBreak()
+		}
+		r.writeLiteral(renderDirectMath(alt, display))
+		if display {
+			r.blockBreak()
+		}
+		return
+	}
 	if alt == "" {
 		alt = nodeAttribute(node, "title")
 	}
@@ -400,6 +447,45 @@ func (r *textRenderer) renderImage(node *xhtml.Node) {
 	r.writeText("[Image: " + strings.Join(strings.Fields(alt), " ") + "]")
 }
 
+func (r *textRenderer) renderObject(node *xhtml.Node) {
+	_, _, delimiterDisplay, delimited := mathFallbackDelimiter(rawNodeText(node))
+	if !isMathAsset(node, "data") && !delimited {
+		r.renderChildren(node)
+		return
+	}
+	fallback := r.renderRawSubtree(node)
+	display := hasClass(node, "align-center") || delimiterDisplay
+	if display {
+		r.blockBreak()
+	}
+	r.writeLiteral(renderDirectMath(fallback, display))
+	if display {
+		r.blockBreak()
+	}
+}
+
+func (r *textRenderer) renderRawSubtree(node *xhtml.Node) string {
+	sub := newTextRenderer(r.base, r.links, r.fallbacks, r.headingBase)
+	sub.disableMath = true
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		sub.renderNode(child)
+	}
+	return sub.render(nil)
+}
+
+func isMathAsset(node *xhtml.Node, sourceAttribute string) bool {
+	return hasClass(node, "latex-math") || strings.Contains(strings.ToLower(nodeAttribute(node, sourceAttribute)), "/images/math/")
+}
+
+func hasClass(node *xhtml.Node, want string) bool {
+	for _, class := range strings.Fields(nodeAttribute(node, "class")) {
+		if strings.EqualFold(class, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *textRenderer) renderLink(node *xhtml.Node) {
 	target, ok := nodeHTTPURL(node, r.base)
 	if !ok || r.links == nil {
@@ -407,6 +493,9 @@ func (r *textRenderer) renderLink(node *xhtml.Node) {
 		return
 	}
 	label := strings.Join(strings.Fields(visibleNodeText(node)), " ")
+	// Only source-empty anchors need fallback text. Math can legitimately erase
+	// a nonempty label; restoring that label would undo the conversion.
+	*r.fallbacks = append(*r.fallbacks, label == "")
 	if label == "" {
 		label = target
 	}
@@ -420,7 +509,7 @@ func (r *textRenderer) renderLink(node *xhtml.Node) {
 }
 
 func (r *textRenderer) renderSubtree(node *xhtml.Node) string {
-	sub := newTextRenderer(r.base, r.links, r.headingBase)
+	sub := newTextRenderer(r.base, r.links, r.fallbacks, r.headingBase)
 	for child := node.FirstChild; child != nil; child = child.NextSibling {
 		sub.renderNode(child)
 	}
@@ -448,8 +537,10 @@ func (r *textRenderer) writeText(value string) {
 }
 
 func (r *textRenderer) writeLiteral(value string) {
+	r.endMathRegion()
 	r.flushSpace()
 	r.b.WriteString(value)
+	r.mathStart = r.b.Len()
 }
 
 func (r *textRenderer) flushSpace() {
@@ -460,13 +551,16 @@ func (r *textRenderer) flushSpace() {
 }
 
 func (r *textRenderer) lineBreak() {
+	r.endMathRegion()
 	r.pendingSpace = false
 	if r.b.Len() > 0 && !strings.HasSuffix(r.b.String(), "\n") {
 		r.b.WriteByte('\n')
 	}
+	r.mathStart = r.b.Len()
 }
 
 func (r *textRenderer) blockBreak() {
+	r.endMathRegion()
 	r.pendingSpace = false
 	if r.b.Len() == 0 {
 		return
@@ -479,6 +573,7 @@ func (r *textRenderer) blockBreak() {
 		r.b.WriteByte('\n')
 		trailing++
 	}
+	r.mathStart = r.b.Len()
 }
 
 func headingBase(nodes []*xhtml.Node) int {
@@ -565,16 +660,32 @@ func linkMarker(index int, edge string) string {
 	return fmt.Sprintf("\x00rxs-link-%d-%s\x00", index, edge)
 }
 
-func formatLinkMarkers(content string, links []Link, formatter LinkFormatter) string {
+func formatLinkMarkers(content string, links []Link, fallbacks []bool, formatter LinkFormatter) string {
+	if len(links) == 0 {
+		return content
+	}
+	var out strings.Builder
+	out.Grow(len(content))
+	var suffixes []string
 	for index, link := range links {
 		start := linkMarker(index, "start")
 		end := linkMarker(index, "end")
 		startAt := strings.Index(content, start)
-		endAt := strings.Index(content, end)
-		if startAt < 0 || endAt < startAt {
+		for startAt < 0 && len(suffixes) > 0 {
+			out.WriteString(content)
+			content = suffixes[len(suffixes)-1]
+			suffixes = suffixes[:len(suffixes)-1]
+			startAt = strings.Index(content, start)
+		}
+		if startAt < 0 {
 			continue
 		}
 		visibleStart := startAt + len(start)
+		endOffset := strings.Index(content[visibleStart:], end)
+		if endOffset < 0 {
+			continue
+		}
+		endAt := visibleStart + endOffset
 		visible := content[visibleStart:endAt]
 		leading := len(visible) - len(strings.TrimLeftFunc(visible, unicode.IsSpace))
 		trailing := len(visible) - len(strings.TrimRightFunc(visible, unicode.IsSpace))
@@ -583,17 +694,32 @@ func formatLinkMarkers(content string, links []Link, formatter LinkFormatter) st
 			coreEnd = leading
 		}
 		core := visible[leading:coreEnd]
-		if core == "" {
+		if core == "" && index < len(fallbacks) && fallbacks[index] {
 			core = link.Text
 		}
 		rendered := core
 		if formatter != nil {
 			rendered = formatter(index, link, core)
 		}
-		replacement := visible[:leading] + rendered + visible[coreEnd:]
-		content = content[:startAt] + replacement + content[endAt+len(end):]
+		out.WriteString(content[:startAt])
+		out.WriteString(visible[:leading])
+		if strings.Contains(rendered, "\x00rxs-link-") {
+			// Malformed HTML can retain nested anchors across table cells.
+			// Visit their rendered label before resuming the untouched suffix;
+			// only link labels, never the whole document, are revisited.
+			suffixes = append(suffixes, content[endAt+len(end):], visible[coreEnd:])
+			content = rendered
+			continue
+		}
+		out.WriteString(rendered)
+		out.WriteString(visible[coreEnd:])
+		content = content[endAt+len(end):]
 	}
-	return content
+	out.WriteString(content)
+	for i := len(suffixes) - 1; i >= 0; i-- {
+		out.WriteString(suffixes[i])
+	}
+	return out.String()
 }
 
 func resolveHTTPURL(href string, base *url.URL) (string, bool) {

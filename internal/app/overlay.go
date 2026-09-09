@@ -30,6 +30,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch key {
 		case "y", "enter":
 			m.quitting = true
+			m.lifetime.cancelBackground()
 			if m.active == readerPane && m.readerEntry != nil {
 				after := stateOf(*m.readerEntry)
 				after.progress = m.reader.ScrollPercent()
@@ -71,7 +72,12 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.deleting = true
 			m.busy = true
-			return m, func() tea.Msg { return deleteMsg{err: m.store.DeleteFeed(context.Background(), feed.ID)} }
+			return m, m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
+				if err := ctx.Err(); err != nil {
+					return deleteMsg{feedID: feed.ID, err: err}
+				}
+				return deleteMsg{feedID: feed.ID, err: m.store.DeleteFeed(ctx, feed.ID)}
+			})
 		}
 		if key == "n" {
 			m.closeOverlay()
@@ -110,10 +116,13 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch mode {
 		case addOverlay:
 			m.busy = true
-			return m, func() tea.Msg {
-				feed, err := m.store.AddFeed(context.Background(), value)
+			return m, m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
+				if err := ctx.Err(); err != nil {
+					return addMsg{err: err}
+				}
+				feed, err := m.store.AddFeed(ctx, value)
 				return addMsg{feed: feed, err: err}
-			}
+			})
 		case searchOverlay:
 			m.filter.Search = value
 			m.entryCursor = 0
@@ -130,6 +139,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case importOverlay:
 			m.busy = true
+			m.canceledImportCount = 0
 			return m, m.importCmd(value)
 		case exportOverlay:
 			m.busy = true
@@ -204,6 +214,7 @@ func (m *Model) previewColorScheme(delta int) {
 
 func (m *Model) applyStyles(styles ui.Styles) {
 	m.styles = styles
+	m.readerCache.wrapped = ""
 	inputStyles := m.input.Styles()
 	inputStyles.Focused.Text = styles.Base
 	inputStyles.Focused.Placeholder = styles.Dim
@@ -216,7 +227,7 @@ func (m *Model) applyStyles(styles ui.Styles) {
 	inputStyles.Cursor.Color = styles.Scheme.Accent
 	m.input.SetStyles(inputStyles)
 	entry := m.currentReaderEntry()
-	if entry.ID != 0 || entry.Title != "" || entry.Text != "" {
+	if entry.ID != 0 || entry.Title != "" || entry.Text != "" || entry.HTML != "" {
 		m.renderReaderContent(entry)
 	}
 }

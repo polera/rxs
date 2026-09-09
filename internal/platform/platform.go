@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/polera/rxs/internal/safefile"
@@ -153,7 +154,7 @@ func saveConfig(path string, config Config) error {
 func DataDir() (string, error) {
 	switch runtime.GOOS {
 	case "linux", "freebsd":
-		if value := os.Getenv("XDG_DATA_HOME"); value != "" {
+		if value := os.Getenv("XDG_DATA_HOME"); filepath.IsAbs(value) {
 			return filepath.Join(value, "rxs"), nil
 		}
 		home, err := os.UserHomeDir()
@@ -231,10 +232,11 @@ func BrowserCommand(config BrowserConfig, rawURL string) (*exec.Cmd, error) {
 	if err := validateBrowserURL(rawURL); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(config.Command) == "" {
+	command := strings.TrimSpace(config.Command)
+	if command == "" {
 		return nil, errors.New("TUI browser command is required")
 	}
-	args := append([]string(nil), config.Args...)
+	args := slices.Clone(config.Args)
 	foundPlaceholder := false
 	for index := range args {
 		if strings.Contains(args[index], "{url}") {
@@ -247,7 +249,7 @@ func BrowserCommand(config BrowserConfig, rawURL string) (*exec.Cmd, error) {
 	}
 	// The executable and arguments are explicitly supplied in the user's local
 	// configuration. exec.Command executes them directly without a shell.
-	return exec.Command(config.Command, args...), nil // #nosec G204
+	return exec.Command(command, args...), nil // #nosec G204
 }
 
 func validateBrowserURL(rawURL string) error {

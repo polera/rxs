@@ -1,6 +1,7 @@
 .idea
 /rxs
 /dist/
+/.tools/
 /THIRD_PARTY_LICENSES.txt
 *.db
 *.db-shm

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func (s *fakeStore) DeleteFeed(_ context.Context, id int64) error {
 	return nil
 }
 func (s *fakeStore) Feeds(context.Context) ([]domain.Feed, error) {
-	return append([]domain.Feed(nil), s.feeds...), s.feedsErr
+	return slices.Clone(s.feeds), s.feedsErr
 }
 func (s *fakeStore) Entries(_ context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
 	s.lastFilter = filter
@@ -122,7 +123,7 @@ func (r *recordingRefresher) Refresh(context.Context, int64) domain.RefreshResul
 
 func (r *recordingRefresher) RefreshAll(_ context.Context, feeds []domain.Feed, workers int) []domain.RefreshResult {
 	r.calls++
-	r.feeds = append([]domain.Feed(nil), feeds...)
+	r.feeds = slices.Clone(feeds)
 	r.workers = workers
 	return []domain.RefreshResult{{FeedID: feeds[0].ID, Added: 2}}
 }
@@ -173,8 +174,8 @@ func loadedModel(t *testing.T) (Model, *fakeStore) {
 	model := New(store, fakeRefresher{}, func(string) error { return nil })
 	var cmd tea.Cmd
 	model, cmd = update(t, model, loadedMsg{
-		feeds:   append([]domain.Feed(nil), store.feeds...),
-		entries: append([]domain.Entry(nil), store.entries...),
+		feeds:   slices.Clone(store.feeds),
+		entries: slices.Clone(store.entries),
 	})
 	if cmd != nil {
 		t.Fatal("loading unexpectedly returned a command")

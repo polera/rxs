@@ -1,12 +1,46 @@
 package article
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/polera/rxs/internal/domain"
 )
+
+func TestUsefulLength(t *testing.T) {
+	for _, text := range []string{
+		"", " \t\n\r\v\f", "one", "  one \t two\n ",
+		"\u00a0\u2003one\u0085two\u2028three\u3000",
+		"\u03b1\u03b2 \u4e2d\u6587", "e\u0301 \U0001f469\u200d\U0001f4bb", "a\u200bb",
+		"\xff \xfe", strings.Repeat("x", shortFeedLength-1),
+		strings.Repeat("x", shortFeedLength), strings.Repeat("x", possiblyPartialSize),
+	} {
+		t.Run(fmt.Sprintf("%q", text), func(t *testing.T) {
+			want := len([]rune(strings.Join(strings.Fields(text), " ")))
+			if got := usefulLength(text); got != want {
+				t.Fatalf("usefulLength = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func BenchmarkUsefulLength(b *testing.B) {
+	for _, size := range []int{500, 5000, 50000} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			text := strings.Repeat("article\twords\u00a0 ", size/15)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(text)))
+			b.ResetTimer()
+			for range b.N {
+				if usefulLength(text) == 0 {
+					b.Fatal("empty normalized length")
+				}
+			}
+		})
+	}
+}
 
 func TestCandidateClassifiesFeedContentConservatively(t *testing.T) {
 	tests := []struct {

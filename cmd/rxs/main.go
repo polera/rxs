@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -42,7 +44,7 @@ func run() error {
 	return runArgs(os.Args[1:], os.Stdout, os.Stderr)
 }
 
-func runArgs(args []string, stdout, stderr io.Writer) error {
+func runArgs(args []string, stdout, stderr io.Writer) (runErr error) {
 	currentVersion := installedVersion(version)
 	defaultPath, err := databasePath()
 	if err != nil {
@@ -78,9 +80,13 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	if len(commandArgs) > 0 {
 		switch commandArgs[0] {
 		case "add":
-			return runAddCommand(context.Background(), commandArgs[1:], *dbPath, *configPath, stdout, stderr)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runAddCommand(ctx, commandArgs[1:], *dbPath, *configPath, stdout, stderr)
 		case "upgrade":
-			return runUpgradeCommand(commandArgs[1:], currentVersion, stdout, stderr)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return runUpgradeCommand(ctx, commandArgs[1:], currentVersion, stdout, stderr)
 		default:
 			return fmt.Errorf("unknown command %q", commandArgs[0])
 		}
@@ -118,11 +124,18 @@ func runArgs(args []string, stdout, stderr io.Writer) error {
 	model.SetColorSchemeSaver(func(name string) error {
 		return platform.SaveColorScheme(*configPath, name)
 	})
+	// Tea owns UI signals and terminal cleanup. Join application work on every
+	// exit, including Run errors, before the earlier repository.Close defer.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		runErr = errors.Join(runErr, model.Shutdown(ctx))
+	}()
 	_, err = tea.NewProgram(model).Run()
 	return err
 }
 
-func runUpgradeCommand(args []string, installed string, stdout, stderr io.Writer) error {
+func runUpgradeCommand(ctx context.Context, args []string, installed string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("rxs upgrade", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprintln(stderr, "Usage: rxs upgrade") }
@@ -135,7 +148,7 @@ func runUpgradeCommand(args []string, installed string, stdout, stderr io.Writer
 	if flags.NArg() != 0 {
 		return errors.New("upgrade does not accept arguments")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	result, err := upgrade.NewClient().Upgrade(ctx, installed, "")
 	if err != nil {

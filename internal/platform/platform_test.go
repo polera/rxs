@@ -9,22 +9,61 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 )
 
-func TestDataDirUsesXDGDataHome(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "freebsd" {
-		t.Skip("XDG data path is Linux- and FreeBSD-specific")
-	}
+func TestDataDir(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", base)
-	dir, err := DataDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("home", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("APPDATA", t.TempDir())
+	configDir, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(base, "rxs"); dir != want {
-		t.Fatalf("DataDir() = %q, want %q", dir, want)
+	for _, value := range []string{base, "", ".", "relative/data", "../data", "~/data", "  "} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", value)
+			want := filepath.Join(configDir, "rxs")
+			if runtime.GOOS == "linux" || runtime.GOOS == "freebsd" {
+				want = filepath.Join(home, ".local", "share", "rxs")
+				if value == base {
+					want = filepath.Join(base, "rxs")
+				}
+			}
+			dir, err := DataDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dir != want {
+				t.Fatalf("DataDir() = %q, want %q", dir, want)
+			}
+		})
+	}
+}
+
+func TestDataDirWithoutHome(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "freebsd" {
+		t.Skip("XDG data path is Linux- and FreeBSD-specific")
+	}
+	t.Setenv("HOME", "")
+	for _, value := range []string{"", "relative/data", t.TempDir()} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("XDG_DATA_HOME", value)
+			dir, err := DataDir()
+			if filepath.IsAbs(value) {
+				if err != nil || dir != filepath.Join(value, "rxs") {
+					t.Fatalf("DataDir() = %q, %v", dir, err)
+				}
+			} else if err == nil || dir != "" {
+				t.Fatalf("DataDir() = %q, %v, want missing-home error", dir, err)
+			}
+		})
 	}
 }
 
@@ -368,6 +407,96 @@ func TestBrowserCommandAppendsURLWithoutPlaceholder(t *testing.T) {
 	}
 	if command.Process != nil || command.ProcessState != nil {
 		t.Fatal("BrowserCommand started a process owned by Bubble Tea")
+	}
+}
+
+func TestBrowserCommandTrimsCommand(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(executable))
+	t.Setenv("RXS_TEST_BROWSER_HELPER", "")
+	for _, name := range []string{filepath.Base(executable), executable} {
+		t.Run(name, func(t *testing.T) {
+			config := BrowserConfig{
+				Mode: BrowserTUI, Command: " \t" + name + "\r\n",
+				Args: []string{"-test.run=^TestBrowserHelperProcess$", "--", "{url}"},
+			}
+			if err := ValidateBrowserConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			command, err := BrowserCommand(config, "https://example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command.Args[0] != name || command.Path != executable {
+				t.Fatalf("command = %q, path = %q, want %q, %q", command.Args[0], command.Path, name, executable)
+			}
+			if command.Process != nil || command.ProcessState != nil {
+				t.Fatal("BrowserCommand started a process owned by Bubble Tea")
+			}
+			if err := command.Run(); err != nil {
+				t.Fatalf("run trimmed command: %v", err)
+			}
+		})
+	}
+	for _, name := range []string{"", " \t\r\n"} {
+		t.Run(name, func(t *testing.T) {
+			config := BrowserConfig{Mode: BrowserTUI, Command: name}
+			if err := ValidateBrowserConfig(config); err == nil {
+				t.Fatal("validation accepted a blank command")
+			}
+			if command, err := BrowserCommand(config, "https://example.test"); err == nil || command != nil {
+				t.Fatalf("BrowserCommand() = %v, %v, want blank-command error", command, err)
+			}
+		})
+	}
+}
+
+func TestBrowserCommandSnapshotsArgs(t *testing.T) {
+	const rawURL = "https://example.test/article?a=1&b=2"
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"nil", nil, []string{"browser", rawURL}},
+		{"empty", []string{}, []string{"browser", rawURL}},
+		{"append", []string{"-M"}, []string{"browser", "-M", rawURL}},
+		{"replace", []string{"-M", "{url}", "--url={url}:{url}"}, []string{"browser", "-M", rawURL, "--url=" + rawURL + ":" + rawURL}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := tt.args
+			if args != nil {
+				// Keep a sentinel beyond the length to detect appends into caller storage.
+				args = append(slices.Clone(args), "sentinel")
+				args = args[:len(args)-1]
+			}
+			backing := args[:cap(args)]
+			before := slices.Clone(backing)
+			config := BrowserConfig{Command: "browser", Args: args}
+			command, err := BrowserCommand(config, rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(command.Args, tt.want) {
+				t.Fatalf("command args = %#v, want %#v", command.Args, tt.want)
+			}
+			if !slices.Equal(backing, before) {
+				t.Fatalf("config args storage changed: %#v, want %#v", backing, before)
+			}
+			if len(args) > 0 {
+				args[0] = "changed config"
+				if !slices.Equal(command.Args, tt.want) {
+					t.Fatal("config mutation changed command args")
+				}
+				command.Args[1] = "changed command"
+				if args[0] != "changed config" {
+					t.Fatal("command mutation changed config args")
+				}
+			}
+		})
 	}
 }
 

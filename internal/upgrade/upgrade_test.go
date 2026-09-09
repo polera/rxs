@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +29,10 @@ func TestAvailable(t *testing.T) {
 		{"v1.2.3", "v1.2.3", false},
 		{"v2.0.0", "v1.9.9", false},
 		{"v1.2.3+build.1", "v1.2.3+build.2", false},
+		{" \t1.2.3\n", " v1.2.4+001 ", true},
+		{"v1.2.3-99999999999999999999", "v1.2.3-100000000000000000000", true},
+		{"v1.2.3-99999999999999999999", "v1.2.3-alpha", true},
+		{"v99999999999999999999.0.0", "v100000000000000000000.0.0", true},
 	}
 	for _, test := range tests {
 		t.Run(test.installed+"_"+test.latest, func(t *testing.T) {
@@ -46,6 +51,82 @@ func TestAvailable(t *testing.T) {
 	if _, err := Available("v1.0.0", "latest"); err == nil {
 		t.Fatal("expected invalid latest version error")
 	}
+}
+
+func TestAvailablePrereleaseOrdering(t *testing.T) {
+	chain := []string{"v1.0.0-alpha", "v1.0.0-alpha.1", "v1.0.0-alpha.beta", "v1.0.0-beta", "v1.0.0-beta.2", "v1.0.0-beta.11", "v1.0.0-rc.1", "v1.0.0"}
+	for i, installed := range chain {
+		for j, latest := range chain {
+			if got, err := Available(installed, latest); err != nil || got != (i < j) {
+				t.Fatalf("Available(%q, %q) = %v, %v", installed, latest, got, err)
+			}
+		}
+	}
+}
+
+func TestAvailableRejectsInvalidVersions(t *testing.T) {
+	for _, version := range []string{
+		"", "dev", "dev-abc123", "v1", "1.2", "v1.2+build.3", "v1.2.3.4",
+		"V1.2.3", "vv1.2.3", "v01.2.3", "v1.02.3", "v1.2.03", "v1.2.3-01",
+		"v1.2.3-00000000000000000000001", "v1.2.3-", "v1.2.3-alpha..1",
+		"v1.2.3+", "v1.2.3+bad!", "v1.2.3+a..b", "v1.2.3+a+b", "v1.2.3\nx",
+	} {
+		t.Run(version, func(t *testing.T) {
+			if _, err := Available(version, "v2.0.0"); !errors.Is(err, ErrDevelopmentVersion) {
+				t.Fatalf("installed error = %v", err)
+			}
+			if _, err := Available("v1.0.0", version); err == nil || errors.Is(err, ErrDevelopmentVersion) {
+				t.Fatalf("latest error = %v", err)
+			}
+		})
+	}
+}
+
+func TestUpgradeToPreservesDisplayVersions(t *testing.T) {
+	installed, latest := " 1.2.3+local ", "v1.2.3+release"
+	result, err := (&Client{}).UpgradeTo(context.Background(), installed, "", Release{Version: latest})
+	if err != nil || result.Previous != installed || result.Current != latest || result.Updated {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+}
+
+func TestUpgradeToCanceledAfterDownload(t *testing.T) {
+	archive := tarGzip(t, "rxs", []byte("new binary"))
+	sum := sha256.Sum256(archive)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &Client{HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(bytes.NewReader(archive))
+		if req.URL.Path == "/checksums" {
+			body = &cancelOnClose{Reader: strings.NewReader(fmt.Sprintf("%x  release.tar.gz\n", sum)), cancel: cancel}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: body, Header: make(http.Header), Request: req}, nil
+	})}}
+	path := filepath.Join(t.TempDir(), "rxs")
+	if err := os.WriteFile(path, []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.UpgradeTo(ctx, "v1.0.0", path, Release{
+		Version: "v1.1.0", ArchiveName: "release.tar.gz",
+		ArchiveURL: "https://release.test/archive", ChecksumsURL: "https://release.test/checksums",
+	})
+	if !errors.Is(err, context.Canceled) || result.Updated {
+		t.Fatalf("result = %+v, %v", result, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "old binary" {
+		t.Fatalf("executable = %q, %v", data, err)
+	}
+	assertNoStagingFiles(t, filepath.Dir(path))
+}
+
+type cancelOnClose struct {
+	io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnClose) Close() error {
+	r.cancel()
+	return nil
 }
 
 func TestLatestSelectsPlatformAssets(t *testing.T) {
@@ -132,7 +213,7 @@ func TestExtractBinaryFromZip(t *testing.T) {
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := extractBinary(archive.Bytes(), "rxs_windows_amd64.zip")
+	got, err := extractBinary(context.Background(), archive.Bytes(), "rxs_windows_amd64.zip")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -55,7 +55,19 @@ func Validate(entry domain.Entry, content Content) error {
 }
 
 func usefulLength(text string) int {
-	return len([]rune(strings.Join(strings.Fields(text), " ")))
+	length, space := 0, false
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			space = length > 0
+			continue
+		}
+		if space {
+			length++
+		}
+		length++
+		space = false
+	}
+	return length
 }
 
 func hasTruncationCue(text string) bool {

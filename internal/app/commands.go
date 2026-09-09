@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -79,17 +78,23 @@ func (m *Model) loadCmdPreserving() tea.Cmd {
 
 func (m Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 	filter, generation := m.filter, m.loadGeneration
-	return func() tea.Msg {
-		feeds, err := m.store.Feeds(context.Background())
+	return m.lifetime.command(m.lifetime.backgroundContext(true), func(ctx context.Context) tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
+		}
+		feeds, err := m.store.Feeds(ctx)
 		if err != nil {
 			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
 		}
-		entries, err := m.store.Entries(context.Background(), filter)
+		if err := ctx.Err(); err != nil {
+			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
+		}
+		entries, err := m.store.Entries(ctx, filter)
 		return loadedMsg{
 			feeds: feeds, entries: entries, filter: filter, generation: generation,
 			preserveSelection: preserveSelection, initial: initial, err: err,
 		}
-	}
+	})
 }
 
 func (m Model) finishInitialRefresh() (tea.Model, tea.Cmd) {
@@ -107,40 +112,55 @@ func (m Model) finishInitialRefresh() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) importCmd(path string) tea.Cmd {
-	return func() tea.Msg {
-		file, err := os.Open(filepath.Clean(path))
+	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return importMsg{err: err}
+		}
+		file, err := openImportFile(ctx, filepath.Clean(path))
 		if err != nil {
 			return importMsg{err: fmt.Errorf("open OPML: %w", err)}
 		}
 		defer file.Close()
-		subscriptions, err := opml.Import(file)
+		subscriptions, err := opml.Import(importReader{ctx: ctx, reader: file})
+		if ctx.Err() != nil {
+			return importMsg{err: ctx.Err()}
+		}
 		if err != nil {
 			return importMsg{err: err}
 		}
 		count := 0
 		for _, subscription := range subscriptions {
-			if _, err := m.store.AddFeed(context.Background(), subscription.FeedURL); err != nil {
+			if err := ctx.Err(); err != nil {
+				return importMsg{count: count, err: err}
+			}
+			if _, err := m.store.AddFeed(ctx, subscription.FeedURL); err != nil {
 				return importMsg{count: count, err: err}
 			}
 			count++
 		}
 		return importMsg{count: count}
-	}
+	})
 }
 
 func (m Model) exportCmd(path string) tea.Cmd {
 	store := m.store
-	return func() tea.Msg {
+	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
 		clean := filepath.Clean(path)
-		feeds, err := store.Feeds(context.Background())
+		if err := ctx.Err(); err != nil {
+			return exportMsg{path: clean, err: err}
+		}
+		feeds, err := store.Feeds(ctx)
 		if err != nil {
 			return exportMsg{path: clean, err: fmt.Errorf("load subscriptions for export: %w", err)}
 		}
 		err = safefile.Write(clean, 0o600, func(writer io.Writer) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return opml.Export(writer, feeds)
 		})
 		return exportMsg{path: clean, err: err}
-	}
+	})
 }
 
 func (m *Model) setError(err error) {

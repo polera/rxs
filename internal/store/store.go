@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +82,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
 	for _, file := range files {
 		versionText, _, ok := strings.Cut(file.Name(), "_")
 		if !ok {
@@ -108,7 +106,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("begin migration %d: %w", version, err)
 		}
-		if _, err = tx.ExecContext(ctx, string(body)); err == nil {
+		if version == 4 {
+			err = normalizeStoredDates(ctx, tx)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, string(body))
+		}
+		if err == nil {
 			_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", version)
 		}
 		if err != nil {
@@ -121,6 +125,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %d: %w", version, err)
 		}
+	}
+	if err := s.backfillEnrichment(ctx); err != nil {
+		return fmt.Errorf("backfill enrichment metadata: %w", err)
 	}
 	return nil
 }
@@ -249,25 +256,35 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 	if parsed.NotModified {
 		return 0, tx.Commit()
 	}
-	added := 0
-	for _, entry := range parsed.Entries {
-		_, err := tx.ExecContext(ctx, `INSERT INTO entries
- (feed_id, identity, url, title, author, published_at, updated_at, html, searchable_text)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	upsert, err := tx.PrepareContext(ctx, `INSERT INTO entries
+ (feed_id, identity, url, title, author, published_at, updated_at, html, searchable_text, enrichment_input_hash, enrichment_eligible)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
  ON CONFLICT(feed_id, identity) DO UPDATE SET
  url=excluded.url, title=excluded.title, author=excluded.author,
  published_at=excluded.published_at, updated_at=excluded.updated_at,
- html=excluded.html, searchable_text=excluded.searchable_text`,
+ html=excluded.html, searchable_text=excluded.searchable_text,
+ enrichment_input_hash=excluded.enrichment_input_hash, enrichment_eligible=excluded.enrichment_eligible
+ RETURNING id`)
+	if err != nil {
+		return 0, fmt.Errorf("prepare entry upsert: %w", err)
+	}
+	defer upsert.Close()
+	state, err := tx.PrepareContext(ctx, "INSERT INTO entry_state(entry_id) VALUES (?) ON CONFLICT(entry_id) DO NOTHING")
+	if err != nil {
+		return 0, fmt.Errorf("prepare entry state: %w", err)
+	}
+	defer state.Close()
+	added := 0
+	for _, entry := range parsed.Entries {
+		var entryID int64
+		err := upsert.QueryRowContext(ctx,
 			feedID, entry.Identity, entry.URL, entry.Title, entry.Author,
-			formatTime(entry.PublishedAt), formatTime(entry.UpdatedAt), entry.HTML, entry.Text)
+			formatTime(entry.PublishedAt), formatTime(entry.UpdatedAt), entry.HTML, entry.Text,
+			article.InputHash(entry.URL, entry.HTML, entry.UpdatedAt), article.Candidate(entry)).Scan(&entryID)
 		if err != nil {
 			return 0, fmt.Errorf("upsert entry %q: %w", entry.Title, err)
 		}
-		var entryID int64
-		if err := tx.QueryRowContext(ctx, "SELECT id FROM entries WHERE feed_id=? AND identity=?", feedID, entry.Identity).Scan(&entryID); err != nil {
-			return 0, err
-		}
-		stateResult, err := tx.ExecContext(ctx, "INSERT INTO entry_state(entry_id) VALUES (?) ON CONFLICT(entry_id) DO NOTHING", entryID)
+		stateResult, err := state.ExecContext(ctx, entryID)
 		if err != nil {
 			return 0, err
 		}
@@ -281,8 +298,10 @@ func (s *Store) ApplyRefresh(ctx context.Context, feedID int64, parsed domain.Pa
 	return added, nil
 }
 
-func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
-	query := `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title, e.author,
+// Keep identical to the expressions in migration 004 and 005.
+const effectiveDateSQL = "CASE WHEN e.published_at='' THEN e.updated_at ELSE e.published_at END"
+
+const entrySelect = `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title, e.author,
  e.published_at, e.updated_at,
  CASE WHEN ec.status='succeeded' THEN ec.html ELSE e.html END,
  CASE WHEN ec.status='succeeded' THEN ec.searchable_text ELSE e.searchable_text END,
@@ -292,6 +311,9 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
  FROM entries e JOIN feeds f ON f.id=e.feed_id
  LEFT JOIN entry_state es ON es.entry_id=e.id
  LEFT JOIN entry_content ec ON ec.entry_id=e.id WHERE 1=1`
+
+func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
+	query := entrySelect
 	var args []any
 	if filter.FeedID != 0 {
 		query += " AND e.feed_id=?"
@@ -308,7 +330,7 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 		pattern := "%" + escapeLike(search) + "%"
 		args = append(args, pattern, pattern)
 	}
-	query += " ORDER BY CASE WHEN e.published_at='' THEN e.updated_at ELSE e.published_at END DESC, e.id DESC"
+	query += " ORDER BY " + effectiveDateSQL + " DESC, e.id DESC"
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 1000
@@ -343,6 +365,15 @@ type EnrichmentCandidate struct {
 	feedCreatedAt string
 }
 
+// Without INDEXED BY, SQLite can prefer the unfiltered date index on databases
+// without ANALYZE statistics and visit every ineligible entry's table pages.
+const enrichmentCandidatesSQL = `SELECT e.id, e.feed_id, f.title, f.url, f.created_at, e.identity, e.url, e.title,
+ e.updated_at, e.html, e.searchable_text, e.enrichment_input_hash
+ FROM entries e INDEXED BY entries_enrichment_pending JOIN feeds f ON f.id=e.feed_id
+ LEFT JOIN entry_content ec ON ec.entry_id=e.id
+ WHERE e.feed_id=? AND e.enrichment_eligible=1 AND e.enrichment_input_hash<>COALESCE(ec.input_hash, '')
+ ORDER BY ` + effectiveDateSQL + ` DESC, e.id DESC LIMIT ?`
+
 // EnrichmentCandidates returns likely partial entries whose current feed input
 // has not already been attempted. The original feed content is returned even
 // when a successful overlay currently exists.
@@ -350,12 +381,7 @@ func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit in
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.feed_id, f.title, f.url, f.created_at, e.identity, e.url, e.title,
- e.updated_at, e.html, e.searchable_text, COALESCE(ec.input_hash, '')
- FROM entries e JOIN feeds f ON f.id=e.feed_id
- LEFT JOIN entry_content ec ON ec.entry_id=e.id
- WHERE e.feed_id=?
- ORDER BY CASE WHEN e.published_at='' THEN e.updated_at ELSE e.published_at END DESC, e.id DESC`, feedID)
+	rows, err := s.db.QueryContext(ctx, enrichmentCandidatesSQL, feedID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list enrichment candidates: %w", err)
 	}
@@ -363,23 +389,13 @@ func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit in
 	candidates := make([]EnrichmentCandidate, 0, limit)
 	for rows.Next() {
 		var entry EnrichmentCandidate
-		var updated, attemptedHash string
+		var updated string
 		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.feedURL, &entry.feedCreatedAt, &entry.Identity, &entry.URL,
-			&entry.Title, &updated, &entry.HTML, &entry.Text, &attemptedHash); err != nil {
+			&entry.Title, &updated, &entry.HTML, &entry.Text, &entry.EnrichmentInputHash); err != nil {
 			return nil, fmt.Errorf("scan enrichment candidate: %w", err)
 		}
 		entry.UpdatedAt = parseTime(updated)
-		if !article.Candidate(entry.Entry) {
-			continue
-		}
-		entry.EnrichmentInputHash = article.InputHash(entry.URL, entry.HTML, entry.UpdatedAt)
-		if entry.EnrichmentInputHash == attemptedHash {
-			continue
-		}
 		candidates = append(candidates, entry)
-		if len(candidates) == limit {
-			break
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list enrichment candidates: %w", err)
@@ -413,6 +429,8 @@ func (s *Store) writeEnrichment(ctx context.Context, candidate EnrichmentCandida
 		return false, fmt.Errorf("begin enrichment: %w", err)
 	}
 	defer tx.Rollback()
+	// Recompute from source in this transaction rather than trusting derived
+	// selection metadata when accepting a downloaded result (including failures).
 	var entryURL, html, updated, attemptedHash string
 	err = tx.QueryRowContext(ctx, `SELECT e.url, e.html, e.updated_at, COALESCE(ec.input_hash, '')
  FROM entries e JOIN feeds f ON f.id=e.feed_id
@@ -503,7 +521,7 @@ func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z")
 }
 
 func parseTime(value string) time.Time {

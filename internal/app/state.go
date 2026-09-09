@@ -69,12 +69,20 @@ func (m *Model) applyEntryState(id int64, state entryState, fields stateFields) 
 func (m *Model) queueStateWrite(entry domain.Entry, after entryState, fields stateFields) tea.Cmd {
 	m.stateRevision++
 	m.loadGeneration++ // A read already in flight may contain pre-mutation state.
+	m.lifetime.cancelLoad()
 	write := stateWrite{
 		revision: m.stateRevision, entryID: entry.ID, fields: fields,
 		before: stateOf(entry), after: after,
 	}
 	m.applyEntryState(entry.ID, after, fields)
 	m.stateWrites = append(m.stateWrites, write)
+	store := m.store
+	m.lifetime.mu.Lock()
+	m.lifetime.pending = append(m.lifetime.pending, &stateTask{
+		revision: write.revision,
+		run:      func(ctx context.Context) stateMsg { return executeStateWrite(ctx, store, write) },
+	})
+	m.lifetime.mu.Unlock()
 	if len(m.stateWrites) == 1 {
 		return m.stateWriteCmd(write)
 	}
@@ -84,32 +92,55 @@ func (m *Model) queueStateWrite(entry domain.Entry, after entryState, fields sta
 func (m Model) stateWriteCmd(write stateWrite) tea.Cmd {
 	store := m.store
 	return func() tea.Msg {
-		msg := stateMsg{write: write, saved: write.before}
-		var errs []error
-		if write.fields&progressField != 0 {
-			if err := store.SetReadingProgress(context.Background(), write.entryID, write.after.progress); err != nil {
-				errs = append(errs, err)
-			} else {
-				msg.saved.progress = write.after.progress
-			}
+		l := m.lifetime
+		l.mu.Lock()
+		if l.closed || len(l.pending) == 0 || l.pending[0].revision != write.revision || l.pending[0].started {
+			l.mu.Unlock()
+			return nil
 		}
-		if write.fields&readField != 0 {
-			if err := store.SetRead(context.Background(), write.entryID, write.after.read); err != nil {
-				errs = append(errs, err)
-			} else {
-				msg.saved.read = write.after.read
-			}
-		}
-		if write.fields&starredField != 0 {
-			if err := store.SetStarred(context.Background(), write.entryID, write.after.starred); err != nil {
-				errs = append(errs, err)
-			} else {
-				msg.saved.starred = write.after.starred
-			}
-		}
-		msg.err = errors.Join(errs...)
+		task := l.pending[0]
+		task.started = true
+		l.work.Add(1)
+		l.mu.Unlock()
+		defer l.work.Done()
+		msg := executeStateWrite(l.ctx, store, write)
+		l.mu.Lock()
+		task.result = &msg
+		l.mu.Unlock()
 		return msg
 	}
+}
+
+func executeStateWrite(ctx context.Context, store Store, write stateWrite) stateMsg {
+	msg := stateMsg{write: write, saved: write.before}
+	if err := ctx.Err(); err != nil {
+		msg.err = err
+		return msg
+	}
+	var errs []error
+	if write.fields&progressField != 0 {
+		if err := store.SetReadingProgress(ctx, write.entryID, write.after.progress); err != nil {
+			errs = append(errs, err)
+		} else {
+			msg.saved.progress = write.after.progress
+		}
+	}
+	if write.fields&readField != 0 {
+		if err := store.SetRead(ctx, write.entryID, write.after.read); err != nil {
+			errs = append(errs, err)
+		} else {
+			msg.saved.read = write.after.read
+		}
+	}
+	if write.fields&starredField != 0 {
+		if err := store.SetStarred(ctx, write.entryID, write.after.starred); err != nil {
+			errs = append(errs, err)
+		} else {
+			msg.saved.starred = write.after.starred
+		}
+	}
+	msg.err = errors.Join(errs...)
+	return msg
 }
 
 func (m Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
@@ -117,7 +148,9 @@ func (m Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.stateWrites = m.stateWrites[1:]
+	m.lifetime.acknowledgeState(msg.write.revision)
 	m.loadGeneration++
+	m.lifetime.cancelLoad()
 	remaining := msg.write.fields
 	for index := range m.stateWrites {
 		pending := &m.stateWrites[index]
@@ -134,6 +167,7 @@ func (m Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
 		m.setError(msg.err)
 		if m.quitting {
 			m.quitting = false
+			m.lifetime.resumeBackground()
 			m.closeOverlay()
 		}
 	}

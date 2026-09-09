@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func TestReaderActionsTargetSnapshotAfterReload(t *testing.T) {
 				model.browser = func(url string) error { opened = url; return nil }
 				model.active = articlesPane
 				model, _ = update(t, model, key('l'))
-				entries := append([]domain.Entry(nil), model.entries[1:]...)
+				entries := slices.Clone(model.entries[1:])
 				if empty {
 					entries = nil
 				}
@@ -387,7 +388,7 @@ func TestExportIncludesAllSubscriptionsDespiteDisplayFilter(t *testing.T) {
 		t.Run(term, func(t *testing.T) {
 			model, store := loadedModel(t)
 			model.allFeeds = append(model.allFeeds, domain.Feed{ID: 2, Title: "Other", URL: "https://other.test/rss"})
-			store.feeds = append([]domain.Feed(nil), model.allFeeds...)
+			store.feeds = slices.Clone(model.allFeeds)
 			model.feedFilter = term
 			model.applyFeedSearch()
 			path := filepath.Join(t.TempDir(), "subscriptions.opml")

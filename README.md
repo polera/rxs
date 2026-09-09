@@ -28,7 +28,7 @@ Open an article in the focused reader:
 
 ## Install
 
-Go 1.26 or newer is required when building from source.
+Go 1.27 or newer is required when building from source.
 
 ```sh
 go install github.com/polera/rxs/cmd/rxs@latest
@@ -72,6 +72,10 @@ The database lives in the platform user-data directory by default (`$XDG_DATA_HO
 Database paths are literal filenames, not SQLite connection strings. On Windows,
 use a local drive path; UNC and device paths are not supported.
 
+Use only one rxs process per database. Concurrent schema migration and multiple
+instances sharing a database are not supported. On Linux and FreeBSD, a relative
+`XDG_DATA_HOME` is ignored; the default is `~/.local/share/rxs`.
+
 ## Use
 
 Press `a`, type or paste an HTTP or HTTPS feed URL with your terminal's paste
@@ -79,7 +83,12 @@ shortcut, and press Enter. The feed is fetched immediately. Downloaded article
 text is searchable and available after the network goes away. LaTeX expressions in
 article text are detected automatically and shown with terminal-friendly Unicode
 symbols; common inline and display delimiters and MathJax `math/tex` blocks are
-supported.
+supported. Math fallback text embedded in HTML `<object>` and math-image `alt`
+attributes is also rendered, as used by feeds such as Eli Bendersky's blog. Practical
+support includes vectors and accents (`\vec`, `\hat`, `\widehat`), blackboard and
+calligraphic letters, fractions, roots, scripts, common operators/relations, angle
+brackets, and flattened `aligned`/`cases` environments. This remains a readable linear
+terminal approximation rather than a full TeX typesetter; unknown commands stay visible.
 
 Each time the interactive UI starts, rxs loads saved subscriptions and articles
 first, then refreshes every feed automatically. The refresh runs concurrently
@@ -120,6 +129,14 @@ Exports and configuration changes are staged before replacing existing files, so
 failed write does not truncate the previous file. Existing symlinks retain their links
 and update their targets; dangling symlinks are rejected.
 
+OPML import accepts a regular UTF-8 file (or a symlink to one) containing one complete
+document, at most 20 MiB including its optional BOM and trailing data. Trailing XML
+whitespace, comments, and processing instructions are allowed; extra roots and malformed
+suffixes are rejected before any subscriptions are added. XML declarations must use
+version 1.0. Bare or external `SYSTEM`/`PUBLIC` OPML DOCTYPE declarations are supported,
+but internal DTD subsets are rejected and external DTDs are never fetched. If adding
+subscriptions subsequently fails, the status reports how many were already added.
+
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
 
 rxs saves each article's reading position when you leave the reader or confirm
@@ -128,6 +145,16 @@ even after restarting rxs or using a different terminal size.
 
 Confirming quit waits for pending read, star, and reading-position writes. If a state
 write fails while quitting, rxs stays open and reports the error instead of exiting.
+Background loads and refreshes are canceled separately, and admitted operations finish
+before the database closes. Superseded article loads are canceled as well as ignored.
+
+If the terminal UI exits unexpectedly, rxs attempts a five-second final flush of state
+changes already queued. Scroll position not yet captured by leaving the reader or
+confirming quit is not included. On timeout, operations are canceled but still joined
+before database close, so unresponsive filesystem calls can delay exit beyond five
+seconds. Forced termination cannot guarantee persistence. CLI `add` and `upgrade`
+honor interrupt/termination signals; the interactive UI retains Bubble Tea's signal
+and terminal handling.
 
 ### Reading configuration
 
@@ -237,9 +264,25 @@ Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Mod
 go test ./...
 go test -race ./...
 go vet ./...
+make license-check
 ```
 
 Fixtures for RSS, Atom, and JSON Feed live in `testdata/feeds`. Database migrations are embedded from `internal/store/migrations`.
+
+`make install-tools` explicitly installs the versions pinned in `Makefile` into
+version-specific `.tools/` directories. `make checks` then runs license, vet, race,
+Staticcheck, OSV, and gosec checks without installing tools or using binaries from
+`PATH`. These development tools are outside the application's module graph. OSV
+results still depend on the current advisory database and network availability.
+
+Use `make fuzz` for bounded parser fuzz runs and `make bench` for repeated benchmark
+samples with allocation reporting. The full benchmark matrix includes 100,000-entry
+storage stress cases and can take several minutes. See [PERFORMANCE.md](PERFORMANCE.md)
+for focused commands, profiling, local measurements, and their limitations.
+
+CI runs tests and vet on Linux and native Windows, plus race checks, bounded fuzzing,
+and license checks on Linux. Native Windows tests exercise executable replacement,
+rollback, and saved-file behavior; cross-compilation alone does not validate those.
 
 Release workflows build Linux, macOS, Windows, and FreeBSD binaries for amd64 and arm64,
 with CGO disabled.
