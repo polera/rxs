@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/polera/rxs/internal/safefile"
 )
 
 const (
@@ -139,7 +141,10 @@ func saveConfig(path string, config Config) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(clean, data, 0o600); err != nil {
+	if err := safefile.Write(clean, 0o600, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
@@ -172,6 +177,8 @@ func ConfigDir() (string, error) {
 	return filepath.Join(dir, "rxs"), nil
 }
 
+// OpenBrowser returns once the system browser launcher starts, not when the
+// browser succeeds. The launcher is waited for asynchronously to release resources.
 func OpenBrowser(rawURL string) error {
 	if err := validateBrowserURL(rawURL); err != nil {
 		return err
@@ -185,10 +192,20 @@ func OpenBrowser(rawURL string) error {
 	default:
 		command = exec.Command("xdg-open", rawURL) // #nosec G204 -- rawURL is a validated HTTP(S) URL passed without a shell.
 	}
+	_, err := startBrowser(command)
+	return err
+}
+
+func startBrowser(command *exec.Cmd) (<-chan error, error) {
 	if err := command.Start(); err != nil {
-		return fmt.Errorf("open browser: %w", err)
+		return nil, fmt.Errorf("open browser: %w", err)
 	}
-	return nil
+	done := make(chan error, 1)
+	go func() {
+		done <- command.Wait()
+		close(done)
+	}()
+	return done, nil
 }
 
 // ValidateBrowserConfig checks whether a configured interactive browser can be

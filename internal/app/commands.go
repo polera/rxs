@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,21 +11,23 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/polera/rxs/internal/domain"
 	"github.com/polera/rxs/internal/opml"
+	"github.com/polera/rxs/internal/safefile"
 )
 
 func (m Model) openBrowser() (tea.Model, tea.Cmd) {
-	if len(m.entries) == 0 || m.active == feedsPane {
+	entry, ok := m.articleActionTarget()
+	if !ok {
 		return m, nil
 	}
-	url := m.entries[m.entryCursor].URL
-	return m.openURL(url, "original article")
+	return m.openURL(entry.URL, "original article")
 }
 
 func (m Model) copyArticleURL() (tea.Model, tea.Cmd) {
-	if m.active == feedsPane || len(m.entries) == 0 {
+	entry, ok := m.articleActionTarget()
+	if !ok {
 		return m, nil
 	}
-	url := m.currentReaderEntry().URL
+	url := entry.URL
 	if strings.TrimSpace(url) == "" {
 		m.setError(fmt.Errorf("article has no URL"))
 		return m, nil
@@ -54,31 +57,53 @@ func (m Model) openURL(url, target string) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg { return browserMsg{target: target, err: m.browser(url)} }
 }
 
-func (m Model) loadCmd() tea.Cmd {
-	return m.loadCmdPreserving(0)
+func (m Model) articleActionTarget() (domain.Entry, bool) {
+	if m.active == readerPane && m.readerEntry != nil {
+		return *m.readerEntry, true
+	}
+	if m.active == articlesPane && m.entryCursor >= 0 && m.entryCursor < len(m.entries) {
+		return m.entries[m.entryCursor], true
+	}
+	return domain.Entry{}, false
 }
 
-func (m Model) initialLoadCmd() tea.Cmd {
-	return m.loadCmdWithOptions(0, true)
+func (m *Model) loadCmd() tea.Cmd {
+	m.loadGeneration++
+	return m.loadCmdWithOptions(false, false)
 }
 
-func (m Model) loadCmdPreserving(entryID int64) tea.Cmd {
-	return m.loadCmdWithOptions(entryID, false)
+func (m *Model) loadCmdPreserving() tea.Cmd {
+	m.loadGeneration++
+	return m.loadCmdWithOptions(true, false)
 }
 
-func (m Model) loadCmdWithOptions(entryID int64, initial bool) tea.Cmd {
-	filter := m.filter
+func (m Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
+	filter, generation := m.filter, m.loadGeneration
 	return func() tea.Msg {
 		feeds, err := m.store.Feeds(context.Background())
 		if err != nil {
-			return loadedMsg{filter: filter, entryID: entryID, initial: initial, err: err}
+			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
 		}
 		entries, err := m.store.Entries(context.Background(), filter)
 		return loadedMsg{
-			feeds: feeds, entries: entries, filter: filter, entryID: entryID,
-			initial: initial, err: err,
+			feeds: feeds, entries: entries, filter: filter, generation: generation,
+			preserveSelection: preserveSelection, initial: initial, err: err,
 		}
 	}
+}
+
+func (m Model) finishInitialRefresh() (tea.Model, tea.Cmd) {
+	if !m.initialRefreshPending || !m.hasLoaded || m.busy || m.quitting {
+		return m, nil
+	}
+	m.initialRefreshPending = false
+	next, cmd := m.refreshAll()
+	if m.errStatus {
+		updated := next.(Model)
+		updated.setStatus(m.status, true)
+		return updated, cmd
+	}
+	return next, cmd
 }
 
 func (m Model) importCmd(path string) tea.Cmd {
@@ -104,17 +129,16 @@ func (m Model) importCmd(path string) tea.Cmd {
 }
 
 func (m Model) exportCmd(path string) tea.Cmd {
-	feeds := append([]domain.Feed(nil), m.feeds...)
+	store := m.store
 	return func() tea.Msg {
 		clean := filepath.Clean(path)
-		file, err := os.Create(clean)
+		feeds, err := store.Feeds(context.Background())
 		if err != nil {
-			return exportMsg{err: fmt.Errorf("create OPML: %w", err)}
+			return exportMsg{path: clean, err: fmt.Errorf("load subscriptions for export: %w", err)}
 		}
-		err = opml.Export(file, feeds)
-		if closeErr := file.Close(); err == nil {
-			err = closeErr
-		}
+		err = safefile.Write(clean, 0o600, func(writer io.Writer) error {
+			return opml.Export(writer, feeds)
+		})
 		return exportMsg{path: clean, err: err}
 	}
 }

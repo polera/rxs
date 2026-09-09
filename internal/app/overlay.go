@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/polera/rxs/internal/domain"
 	"github.com/polera/rxs/internal/ui"
 )
 
@@ -28,17 +29,16 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 	if m.overlay == quitOverlay {
 		switch key {
 		case "y", "enter":
-			if m.active != readerPane || m.readerEntry == nil {
+			m.quitting = true
+			if m.active == readerPane && m.readerEntry != nil {
+				after := stateOf(*m.readerEntry)
+				after.progress = m.reader.ScrollPercent()
+				return m, m.queueStateWrite(*m.readerEntry, after, progressField)
+			}
+			if len(m.stateWrites) == 0 {
 				return m, tea.Quit
 			}
-			store := m.store
-			entryID := m.readerEntry.ID
-			progress := m.reader.ScrollPercent()
-			return m, func() tea.Msg {
-				// Complete the local SQLite write before Bubble Tea exits.
-				_ = store.SetReadingProgress(context.Background(), entryID, progress)
-				return tea.Quit()
-			}
+			return m, nil
 		case "n", "q", "esc", "ctrl+c":
 			m.closeOverlay()
 		}
@@ -53,8 +53,23 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.overlay == deleteOverlay {
 		if key == "y" || key == "enter" {
-			feed := m.feeds[m.feedCursor-2]
+			feed := m.deleteTarget
 			m.closeOverlay()
+			if m.busy || m.deleting {
+				return m, nil
+			}
+			found := false
+			for _, current := range m.allFeeds {
+				if current.ID == feed.ID && current.URL == feed.URL {
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.setError(fmt.Errorf("feed is no longer available"))
+				return m, nil
+			}
+			m.deleting = true
 			m.busy = true
 			return m, func() tea.Msg { return deleteMsg{err: m.store.DeleteFeed(context.Background(), feed.ID)} }
 		}
@@ -226,5 +241,6 @@ func (m *Model) openInput(mode overlay, prompt, placeholder string) (tea.Model, 
 
 func (m *Model) closeOverlay() {
 	m.overlay = noOverlay
+	m.deleteTarget = domain.Feed{}
 	m.input.Blur()
 }

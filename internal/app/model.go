@@ -75,11 +75,19 @@ type Model struct {
 	styles     ui.Styles
 	saveScheme ColorSchemeSaver
 
-	allFeeds   []domain.Feed
-	feeds      []domain.Feed
-	entries    []domain.Entry
-	filter     domain.EntryFilter
-	feedFilter string
+	allFeeds              []domain.Feed
+	feeds                 []domain.Feed
+	entries               []domain.Entry
+	filter                domain.EntryFilter
+	feedFilter            string
+	loadGeneration        uint64
+	hasLoaded             bool
+	initialRefreshPending bool
+	stateWrites           []stateWrite
+	stateRevision         uint64
+	quitting              bool
+	deleteTarget          domain.Feed
+	deleting              bool
 
 	feedCursor          int
 	entryCursor         int
@@ -116,20 +124,19 @@ type readerMatch struct {
 }
 
 type loadedMsg struct {
-	feeds   []domain.Feed
-	entries []domain.Entry
-	filter  domain.EntryFilter
-	entryID int64
-	initial bool
-	err     error
+	feeds             []domain.Feed
+	entries           []domain.Entry
+	filter            domain.EntryFilter
+	generation        uint64
+	preserveSelection bool
+	initial           bool
+	err               error
 }
 type addMsg struct {
 	feed domain.Feed
 	err  error
 }
 type deleteMsg struct{ err error }
-type stateMsg struct{ err error }
-type readingProgressMsg struct{ err error }
 type refreshMsg struct{ results []domain.RefreshResult }
 type browserMsg struct {
 	target string
@@ -210,7 +217,7 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 	return model
 }
 
-func (m Model) Init() tea.Cmd { return m.initialLoadCmd() }
+func (m Model) Init() tea.Cmd { return m.loadCmdWithOptions(false, true) }
 
 func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 	defer func() {
@@ -234,38 +241,52 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		m.checkReaderReachedBottom()
 		return m, nil
 	case loadedMsg:
+		if msg.initial {
+			m.initialRefreshPending = true
+		}
+		if msg.generation != m.loadGeneration || msg.filter != m.filter {
+			return m.finishInitialRefresh()
+		}
 		if msg.err != nil {
 			m.setError(msg.err)
 			return m, nil
 		}
-		if msg.filter != m.filter {
-			return m, nil
-		}
+		selectedID := m.selectedEntryID()
 		m.allFeeds, m.entries = msg.feeds, msg.entries
+		m.hasLoaded = true
 		m.applyFeedSearch()
 		m.reconcileFeedCursor()
 		m.clampCursors()
-		if msg.entryID != 0 {
-			m.restoreEntrySelection(msg.entryID)
+		if msg.preserveSelection {
+			m.restoreEntrySelection(selectedID)
+		}
+		if m.readerEntry != nil {
+			for _, entry := range m.entries {
+				if entry.ID == m.readerEntry.ID {
+					m.applyEntryState(entry.ID, stateOf(entry), readField|starredField|progressField)
+					break
+				}
+			}
+		}
+		for _, write := range m.stateWrites {
+			m.applyEntryState(write.entryID, write.after, write.fields)
 		}
 		m.syncReader()
 		if m.status == "Loading subscriptions…" || m.status == "Loading articles…" {
 			m.clearStatus()
 		}
-		if msg.initial {
-			return m.refreshAll()
-		}
-		return m, nil
+		return m.finishInitialRefresh()
 	case addMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.setError(msg.err)
-			return m, nil
+			return m.finishInitialRefresh()
 		}
 		m.setPersistentStatus("Added "+msg.feed.Title+"; refreshing…", false)
 		m.busy = true
 		return m, m.refreshOneCmd(msg.feed.ID)
 	case deleteMsg:
+		m.deleting = false
 		m.busy = false
 		if msg.err != nil {
 			m.setError(msg.err)
@@ -278,15 +299,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		}
 		return m, m.loadCmd()
 	case stateMsg:
-		if msg.err != nil {
-			m.setError(msg.err)
-		}
-		return m, m.loadCmdPreserving(m.selectedEntryID())
-	case readingProgressMsg:
-		if msg.err != nil {
-			m.setError(msg.err)
-		}
-		return m, nil
+		return m.completeStateWrite(msg)
 	case refreshMsg:
 		m.busy = false
 		failures, added, expanded, expansionFailures := 0, 0, 0, 0
@@ -311,7 +324,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		} else {
 			m.setStatus(fmt.Sprintf("Refresh finished: %d new article(s)", added), false)
 		}
-		return m, m.loadCmd()
+		return m, m.loadCmdPreserving()
 	case browserMsg:
 		if msg.err != nil {
 			m.setError(msg.err)
@@ -326,7 +339,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		} else {
 			m.setStatus(fmt.Sprintf("Imported %d subscription(s)", msg.count), false)
 		}
-		return m, m.loadCmd()
+		return m, m.loadCmdPreserving()
 	case exportMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -334,7 +347,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		} else {
 			m.setStatus("Exported subscriptions to "+msg.path, false)
 		}
-		return m, nil
+		return m.finishInitialRefresh()
 	case colorSchemeSavedMsg:
 		if msg.err != nil {
 			m.setError(fmt.Errorf("save color scheme: %w", msg.err))
@@ -348,6 +361,9 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.quitting {
+			return m, nil
+		}
 		if m.overlay != noOverlay {
 			return m.updateOverlay(msg)
 		}

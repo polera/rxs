@@ -1,11 +1,16 @@
 package platform
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestDataDirUsesXDGDataHome(t *testing.T) {
@@ -147,6 +152,91 @@ func TestSaveColorSchemeCreatesConfig(t *testing.T) {
 	}
 }
 
+func TestSaveColorSchemePreservesFilePolicyAndSettings(t *testing.T) {
+	for _, link := range []bool{false, true} {
+		name := "regular"
+		if link {
+			name = "symlink"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "config.json")
+			original := Config{
+				Browser:    BrowserConfig{Mode: BrowserTUI, Command: "w3m", Args: []string{"-M", "{url}"}},
+				Appearance: AppearanceConfig{ColorScheme: "dracula"},
+				Reading:    ReadingConfig{MarkReadOnScroll: true, HideRead: false},
+				Content:    ContentConfig{FullArticles: FullArticlesAuto},
+			}
+			if err := saveConfig(target, original); err != nil {
+				t.Fatal(err)
+			}
+			if info, err := os.Stat(target); err != nil {
+				t.Fatal(err)
+			} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+				t.Fatalf("new config mode = %o, want 600", info.Mode().Perm())
+			}
+			if err := os.Chmod(target, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := target
+			if link {
+				path = filepath.Join(t.TempDir(), "link.json")
+				if err := os.Symlink(target, path); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("symlink creation unavailable: %v", err)
+					}
+					t.Fatal(err)
+				}
+			}
+			if err := SaveColorScheme(path, "  NoRd  "); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadConfig(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original.Appearance.ColorScheme = "nord"
+			if !reflect.DeepEqual(got, original) {
+				t.Fatalf("saved config = %#v, want %#v", got, original)
+			}
+			after, err := os.Stat(target)
+			if err != nil || after.Mode().Perm() != before.Mode().Perm() {
+				t.Fatalf("config permissions changed: %v, %v", after, err)
+			}
+			if link {
+				if got, err := os.Readlink(path); err != nil || got != target {
+					t.Fatalf("config symlink changed: %q, %v", got, err)
+				}
+			}
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+				t.Fatalf("staging files left behind: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestSaveColorSchemeLeavesInvalidConfigUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	const original = `{"browser": {"mode": "tui"}, "unknown": true}`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveColorScheme(path, "nord"); err == nil {
+		t.Fatal("invalid config was overwritten")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != original {
+		t.Fatalf("config changed: %q, %v", got, err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+		t.Fatalf("staging files left behind: %v, %v", entries, err)
+	}
+}
+
 func TestSaveColorSchemePreservesBrowserConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -257,13 +347,12 @@ func TestValidateBrowserConfigWarnsWhenCommandDoesNotExist(t *testing.T) {
 }
 
 func TestValidateBrowserConfigAcceptsCommandOnPath(t *testing.T) {
-	dir := t.TempDir()
-	commandPath := filepath.Join(dir, "test-browser")
-	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+	commandPath, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-	if err := ValidateBrowserConfig(BrowserConfig{Mode: BrowserTUI, Command: "test-browser"}); err != nil {
+	t.Setenv("PATH", filepath.Dir(commandPath))
+	if err := ValidateBrowserConfig(BrowserConfig{Mode: BrowserTUI, Command: filepath.Base(commandPath)}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -277,4 +366,102 @@ func TestBrowserCommandAppendsURLWithoutPlaceholder(t *testing.T) {
 	if !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("command args = %#v, want %#v", command.Args, want)
 	}
+	if command.Process != nil || command.ProcessState != nil {
+		t.Fatal("BrowserCommand started a process owned by Bubble Tea")
+	}
+}
+
+func TestStartBrowserLifecycle(t *testing.T) {
+	for _, result := range []string{"success", "failure"} {
+		t.Run(result, func(t *testing.T) {
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The deadline is only a deadlock guard; pipe handshakes control ordering.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, executable, "-test.run=^TestBrowserHelperProcess$")
+			command.Env = append(os.Environ(), "RXS_TEST_BROWSER_HELPER="+result)
+			input, err := command.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer input.Close()
+			output, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			done, err := startBrowser(command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Error("launcher was not reaped during cleanup")
+				}
+			}()
+			var ready [1]byte
+			if _, err := io.ReadFull(output, ready[:]); err != nil || ready[0] != 'R' {
+				t.Fatalf("helper readiness = %q, %v", ready, err)
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("launcher completed before release: %v", err)
+			default:
+			}
+			if _, err := input.Write([]byte("X")); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if result == "failure" {
+					var exitErr *exec.ExitError
+					if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+						t.Fatalf("Wait error = %v, want exit code 7", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("launcher was not reaped after release")
+			}
+			if command.ProcessState == nil || !command.ProcessState.Exited() {
+				t.Fatal("launcher has no completed process state")
+			}
+			if _, open := <-done; open {
+				t.Fatal("completion channel was not closed")
+			}
+		})
+	}
+}
+
+func TestStartBrowserReturnsStartError(t *testing.T) {
+	command := exec.Command(filepath.Join(t.TempDir(), "missing-browser"))
+	done, err := startBrowser(command)
+	if !errors.Is(err, os.ErrNotExist) || done != nil || command.Process != nil {
+		t.Fatalf("start = (%v, %v), process = %v", done, err, command.Process)
+	}
+}
+
+func TestBrowserHelperProcess(t *testing.T) {
+	result := os.Getenv("RXS_TEST_BROWSER_HELPER")
+	if result == "" {
+		return
+	}
+	if _, err := os.Stdout.Write([]byte("R")); err != nil {
+		os.Exit(2)
+	}
+	var release [1]byte
+	if _, err := io.ReadFull(os.Stdin, release[:]); err != nil || release[0] != 'X' {
+		os.Exit(3)
+	}
+	if result == "failure" {
+		os.Exit(7)
+	}
+	os.Exit(0)
 }

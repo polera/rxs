@@ -69,6 +69,9 @@ rxs add https://example.com/feed.xml
 
 The database lives in the platform user-data directory by default (`$XDG_DATA_HOME/rxs/rxs.db` or `~/.local/share/rxs/rxs.db` on Linux and FreeBSD). Pass `-db PATH` to use a different database. No configuration file is required.
 
+Database paths are literal filenames, not SQLite connection strings. On Windows,
+use a local drive path; UNC and device paths are not supported.
+
 ## Use
 
 Press `a`, type or paste an HTTP or HTTPS feed URL with your terminal's paste
@@ -112,11 +115,19 @@ refresh at any time.
 Copying uses the terminal's OSC52 clipboard support. The terminal must allow
 clipboard writes for `y` to update the system clipboard.
 
+OPML export includes all saved subscriptions, regardless of the active feed filter.
+Exports and configuration changes are staged before replacing existing files, so a
+failed write does not truncate the previous file. Existing symlinks retain their links
+and update their targets; dangling symlinks are rejected.
+
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
 
 rxs saves each article's reading position when you leave the reader or confirm
 that you want to quit. Opening that article again resumes at the saved position,
 even after restarting rxs or using a different terminal size.
+
+Confirming quit waits for pending read, star, and reading-position writes. If a state
+write fails while quitting, rxs stays open and reports the error instead of exiting.
 
 ### Reading configuration
 

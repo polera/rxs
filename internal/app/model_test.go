@@ -18,6 +18,7 @@ import (
 
 type fakeStore struct {
 	feeds         []domain.Feed
+	feedsErr      error
 	entries       []domain.Entry
 	addURLs       []string
 	addFeed       domain.Feed
@@ -25,20 +26,27 @@ type fakeStore struct {
 	readCalls     []bool
 	readIDs       []int64
 	starCalls     []bool
+	starIDs       []int64
+	starErr       error
+	deleteIDs     []int64
 	lastFilter    domain.EntryFilter
 	readErr       error
 	persistRead   bool
 	progressCalls []float64
 	progressIDs   []int64
+	progressErr   error
 }
 
 func (s *fakeStore) AddFeed(_ context.Context, rawURL string) (domain.Feed, error) {
 	s.addURLs = append(s.addURLs, rawURL)
 	return s.addFeed, s.addErr
 }
-func (s *fakeStore) DeleteFeed(context.Context, int64) error { return nil }
+func (s *fakeStore) DeleteFeed(_ context.Context, id int64) error {
+	s.deleteIDs = append(s.deleteIDs, id)
+	return nil
+}
 func (s *fakeStore) Feeds(context.Context) ([]domain.Feed, error) {
-	return append([]domain.Feed(nil), s.feeds...), nil
+	return append([]domain.Feed(nil), s.feeds...), s.feedsErr
 }
 func (s *fakeStore) Entries(_ context.Context, filter domain.EntryFilter) ([]domain.Entry, error) {
 	s.lastFilter = filter
@@ -66,13 +74,25 @@ func (s *fakeStore) SetRead(_ context.Context, id int64, value bool) error {
 	}
 	return nil
 }
-func (s *fakeStore) SetStarred(_ context.Context, _ int64, value bool) error {
+func (s *fakeStore) SetStarred(_ context.Context, id int64, value bool) error {
 	s.starCalls = append(s.starCalls, value)
+	s.starIDs = append(s.starIDs, id)
+	if s.starErr != nil {
+		return s.starErr
+	}
+	for index := range s.entries {
+		if s.entries[index].ID == id {
+			s.entries[index].Starred = value
+		}
+	}
 	return nil
 }
 func (s *fakeStore) SetReadingProgress(_ context.Context, id int64, progress float64) error {
 	s.progressIDs = append(s.progressIDs, id)
 	s.progressCalls = append(s.progressCalls, progress)
+	if s.progressErr != nil {
+		return s.progressErr
+	}
 	for index := range s.entries {
 		if s.entries[index].ID == id {
 			s.entries[index].ReadingProgress = progress
@@ -555,7 +575,7 @@ func TestReaderMarksReadOnlyAfterBottomAndReturn(t *testing.T) {
 	if cmd == nil || len(store.readCalls) != 0 {
 		t.Fatal("returning before the bottom did not schedule a progress-only write")
 	}
-	_ = cmd()
+	model, _ = update(t, model, cmd())
 	if len(store.readCalls) != 0 || !reflect.DeepEqual(store.progressIDs, []int64{10}) {
 		t.Fatalf("early return writes: progress=%v reads=%v", store.progressIDs, store.readIDs)
 	}
@@ -1071,10 +1091,14 @@ func TestConfirmedQuitSavesOpenReaderProgress(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirming quit returned no command")
 	}
+	model, cmd = update(t, model, cmd())
+	if cmd == nil {
+		t.Fatal("saved progress did not schedule quit")
+	}
 	if message := cmd(); message == nil {
-		t.Fatal("confirming quit returned no message")
+		t.Fatal("saved progress returned no message")
 	} else if _, ok := message.(tea.QuitMsg); !ok {
-		t.Fatalf("confirming quit returned %T, want tea.QuitMsg", message)
+		t.Fatalf("saved progress returned %T, want tea.QuitMsg", message)
 	}
 	if !reflect.DeepEqual(store.progressIDs, []int64{10}) ||
 		!reflect.DeepEqual(store.progressCalls, []float64{wantProgress}) {

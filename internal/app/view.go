@@ -199,9 +199,7 @@ func (m Model) overlayView() string {
 		content = strings.Join(lines, "\n") + "\n\nj/k preview · Enter save · Esc cancel"
 	case deleteOverlay:
 		title = "Remove feed?"
-		if m.feedCursor >= 2 && m.feedCursor-2 < len(m.feeds) {
-			content = fmt.Sprintf("Remove %q and its downloaded articles?\n\nPress y to remove or n to cancel.", m.feeds[m.feedCursor-2].Title)
-		}
+		content = fmt.Sprintf("Remove %q and its downloaded articles?\n\nPress y to remove or n to cancel.", m.deleteTarget.Title)
 	default:
 		title = "Input"
 		content = m.input.View() + "\n\nEnter to confirm · Esc to cancel · Paste with terminal shortcut"

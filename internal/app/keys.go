@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -198,7 +197,8 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		return m.refreshAll()
 	case "d":
-		if m.active == feedsPane && m.feedCursor >= 2 && len(m.feeds) > 0 {
+		if !m.busy && !m.deleting && m.active == feedsPane && m.feedCursor >= 2 && m.feedCursor-2 < len(m.feeds) {
+			m.deleteTarget = m.feeds[m.feedCursor-2]
 			m.overlay = deleteOverlay
 		}
 		return m, nil
@@ -317,11 +317,11 @@ func (m Model) openSelected() (tea.Model, tea.Cmd) {
 		m.active = articlesPane
 		return m, m.loadCmd()
 	}
-	if len(m.entries) == 0 {
+	if m.active == readerPane {
+		if m.readerLinkCursor >= 0 && m.readerLinkCursor < len(m.readerLinks) {
+			return m.openURL(m.readerLinks[m.readerLinkCursor].URL, "link")
+		}
 		return m, nil
-	}
-	if m.active == readerPane && m.readerLinkCursor >= 0 && m.readerLinkCursor < len(m.readerLinks) {
-		return m.openURL(m.readerLinks[m.readerLinkCursor].URL, "link")
 	}
 	return m.enterReader()
 }
@@ -331,10 +331,6 @@ func (m Model) openSelected() (tea.Model, tea.Cmd) {
 // entry paths must initialize the snapshot and bottom latch used on exit.
 func (m Model) enterReader() (tea.Model, tea.Cmd) {
 	if len(m.entries) == 0 {
-		m.active = readerPane
-		m.readerEntry = nil
-		m.readerReachedBottom = false
-		m.resizeReader()
 		return m, nil
 	}
 	entry := &m.entries[m.entryCursor]
@@ -355,13 +351,10 @@ func (m Model) enterReader() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) toggleRead() (tea.Model, tea.Cmd) {
-	if len(m.entries) == 0 || m.active == feedsPane {
+	entry, ok := m.articleActionTarget()
+	if !ok {
 		return m, nil
 	}
-	if m.active == readerPane && m.readerEntry != nil {
-		return m, m.setRead(m.readerEntry.ID, !m.readerEntry.Read)
-	}
-	entry := m.entries[m.entryCursor]
 	return m, m.setRead(entry.ID, !entry.Read)
 }
 
@@ -374,90 +367,53 @@ func (m *Model) markPreviewLeft(oldCursor int, oldEntryID int64) tea.Cmd {
 }
 
 func (m *Model) setRead(id int64, value bool) tea.Cmd {
-	found, changed := false, false
-	for index := range m.entries {
-		if m.entries[index].ID != id {
-			continue
-		}
-		found = true
-		if m.entries[index].Read != value {
-			changed = true
+	var entry domain.Entry
+	for _, candidate := range m.entries {
+		if candidate.ID == id {
+			entry = candidate
+			break
 		}
 	}
-	if m.readerEntry != nil && m.readerEntry.ID == id {
-		found = true
-		if m.readerEntry.Read != value {
-			changed = true
-		}
+	if m.readerEntry != nil && m.readerEntry.ID == id && (entry.ID == 0 || m.active == readerPane) {
+		entry = *m.readerEntry
 	}
-	if !found || !changed {
+	if entry.ID == 0 || entry.Read == value {
 		return nil
 	}
-	for index := range m.entries {
-		if m.entries[index].ID == id {
-			m.entries[index].Read = value
-		}
-	}
-	if m.readerEntry != nil && m.readerEntry.ID == id {
-		m.readerEntry.Read = value
-	}
-	store := m.store
-	return func() tea.Msg {
-		return stateMsg{err: store.SetRead(context.Background(), id, value)}
-	}
+	after := stateOf(entry)
+	after.read = value
+	return m.queueStateWrite(entry, after, readField)
 }
 
 func (m *Model) leaveReader() tea.Cmd {
 	if m.active != readerPane {
 		return nil
 	}
-	reachedBottom := m.readerReachedBottom
 	entry := m.readerEntry
-	progress := m.reader.ScrollPercent()
+	var cmd tea.Cmd
 	if entry != nil {
-		entry.ReadingProgress = progress
-		for index := range m.entries {
-			if m.entries[index].ID == entry.ID {
-				m.entries[index].ReadingProgress = progress
-				break
-			}
+		after := stateOf(*entry)
+		after.progress = m.reader.ScrollPercent()
+		fields := progressField
+		if m.readerReachedBottom && !entry.Read {
+			after.read = true
+			fields |= readField
 		}
+		cmd = m.queueStateWrite(*entry, after, fields)
 	}
 	m.active = articlesPane
 	m.resizeReader()
-	if entry == nil {
-		return nil
-	}
-	readCmd := tea.Cmd(nil)
-	if reachedBottom {
-		readCmd = m.setRead(entry.ID, true)
-	}
-	store := m.store
-	if readCmd == nil {
-		return func() tea.Msg {
-			return readingProgressMsg{
-				err: store.SetReadingProgress(context.Background(), entry.ID, progress),
-			}
-		}
-	}
-	return func() tea.Msg {
-		progressErr := store.SetReadingProgress(context.Background(), entry.ID, progress)
-		readMsg, _ := readCmd().(stateMsg)
-		return stateMsg{err: errors.Join(progressErr, readMsg.err)}
-	}
+	return cmd
 }
 
 func (m Model) toggleStarred() (tea.Model, tea.Cmd) {
-	if len(m.entries) == 0 || m.active == feedsPane {
+	entry, ok := m.articleActionTarget()
+	if !ok {
 		return m, nil
 	}
-	entry := &m.entries[m.entryCursor]
-	entry.Starred = !entry.Starred
-	if m.readerEntry != nil && m.readerEntry.ID == entry.ID {
-		m.readerEntry.Starred = entry.Starred
-	}
-	value, id := entry.Starred, entry.ID
-	return m, func() tea.Msg { return stateMsg{err: m.store.SetStarred(context.Background(), id, value)} }
+	after := stateOf(entry)
+	after.starred = !entry.Starred
+	return m, m.queueStateWrite(entry, after, starredField)
 }
 
 func (m Model) refreshSelected() (tea.Model, tea.Cmd) {

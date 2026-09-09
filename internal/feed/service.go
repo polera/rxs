@@ -7,6 +7,7 @@ import (
 
 	"github.com/polera/rxs/internal/article"
 	"github.com/polera/rxs/internal/domain"
+	"github.com/polera/rxs/internal/store"
 )
 
 const maxEnrichmentsPerRefresh = 10
@@ -18,9 +19,9 @@ type Repository interface {
 }
 
 type enrichmentRepository interface {
-	EnrichmentCandidates(context.Context, int64, int) ([]domain.Entry, error)
-	SaveEnrichment(context.Context, int64, string, article.Content) error
-	RecordEnrichmentError(context.Context, int64, string, error) error
+	EnrichmentCandidates(context.Context, int64, int) ([]store.EnrichmentCandidate, error)
+	SaveEnrichment(context.Context, store.EnrichmentCandidate, article.Content) (bool, error)
+	RecordEnrichmentError(context.Context, store.EnrichmentCandidate, error) (bool, error)
 }
 
 type Fetcher interface {
@@ -88,28 +89,24 @@ func (s *Service) enrich(ctx context.Context, feedID int64, result *domain.Refre
 		if ctx.Err() != nil {
 			return
 		}
-		inputHash := entry.EnrichmentInputHash
-		if inputHash == "" {
-			inputHash = article.InputHash(entry.URL, entry.HTML, entry.UpdatedAt)
-		}
 		content, extractErr := s.extractor.Extract(ctx, entry.URL)
 		if extractErr == nil {
-			extractErr = article.Validate(entry, content)
+			extractErr = article.Validate(entry.Entry, content)
 		}
 		if extractErr != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = repository.RecordEnrichmentError(ctx, entry.ID, inputHash, extractErr)
-			result.ExpansionFailed++
+			if applied, err := repository.RecordEnrichmentError(ctx, entry, extractErr); applied || err != nil {
+				result.ExpansionFailed++
+			}
 			continue
 		}
-		if err := repository.SaveEnrichment(ctx, entry.ID, inputHash, content); err != nil {
-			_ = repository.RecordEnrichmentError(ctx, entry.ID, inputHash, err)
+		if applied, err := repository.SaveEnrichment(ctx, entry, content); err != nil {
 			result.ExpansionFailed++
-			continue
+		} else if applied {
+			result.Expanded++
 		}
-		result.Expanded++
 	}
 }
 

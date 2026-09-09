@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,20 +27,10 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	if path == "" {
-		return nil, errors.New("database path is empty")
+	dsn, err := databaseDSN(path)
+	if err != nil {
+		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(path)
-	if path == ":memory:" {
-		dsn = "file:rxs-memory?mode=memory&cache=shared"
-	}
-	separator := "?"
-	if strings.Contains(dsn, "?") {
-		separator = "&"
-	}
-	dsn += separator + url.Values{
-		"_pragma": []string{"foreign_keys(1)", "journal_mode(WAL)", "busy_timeout(5000)"},
-	}.Encode()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -53,6 +44,31 @@ func Open(path string) (*Store, error) {
 		return nil, closeAfterError(db, err)
 	}
 	return s, nil
+}
+
+func databaseDSN(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("database path is empty")
+	}
+	query := url.Values{
+		"_pragma": []string{"foreign_keys(1)", "journal_mode(WAL)", "busy_timeout(5000)"},
+	}.Encode()
+	if path == ":memory:" {
+		return "file::memory:?" + query, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve database path: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		// SQLite file URIs do not portably support UNC authorities or device paths.
+		if strings.HasPrefix(filepath.VolumeName(abs), `\\`) {
+			return "", errors.New("UNC and device database paths are not supported; use a local drive path")
+		}
+		// A drive letter belongs in the URI path, not its authority or scheme.
+		abs = "/" + filepath.ToSlash(abs)
+	}
+	return (&url.URL{Scheme: "file", Path: abs, RawQuery: query}).String(), nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -118,7 +134,8 @@ func (s *Store) AddFeed(ctx context.Context, feedURL string) (domain.Feed, error
 	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		return domain.Feed{}, fmt.Errorf("invalid feed URL %q (use http or https)", feedURL)
 	}
-	result, err := s.db.ExecContext(ctx, "INSERT INTO feeds(url, title) VALUES (?, ?) ON CONFLICT(url) DO NOTHING", feedURL, feedURL)
+	// Preserve subsecond creation identity when a deleted subscription is re-added.
+	result, err := s.db.ExecContext(ctx, "INSERT INTO feeds(url, title, created_at) VALUES (?, ?, ?) ON CONFLICT(url) DO NOTHING", feedURL, feedURL, formatTime(time.Now()))
 	if err != nil {
 		return domain.Feed{}, fmt.Errorf("add feed: %w", err)
 	}
@@ -318,14 +335,22 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 	return entries, rows.Err()
 }
 
+// EnrichmentCandidate carries the original input and subscription identity.
+// Pass it unchanged to SaveEnrichment or RecordEnrichmentError.
+type EnrichmentCandidate struct {
+	domain.Entry
+	feedURL       string
+	feedCreatedAt string
+}
+
 // EnrichmentCandidates returns likely partial entries whose current feed input
 // has not already been attempted. The original feed content is returned even
 // when a successful overlay currently exists.
-func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit int) ([]domain.Entry, error) {
+func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit int) ([]EnrichmentCandidate, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.feed_id, f.title, e.url, e.title,
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.feed_id, f.title, f.url, f.created_at, e.identity, e.url, e.title,
  e.updated_at, e.html, e.searchable_text, COALESCE(ec.input_hash, '')
  FROM entries e JOIN feeds f ON f.id=e.feed_id
  LEFT JOIN entry_content ec ON ec.entry_id=e.id
@@ -335,16 +360,16 @@ func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit in
 		return nil, fmt.Errorf("list enrichment candidates: %w", err)
 	}
 	defer rows.Close()
-	candidates := make([]domain.Entry, 0, limit)
+	candidates := make([]EnrichmentCandidate, 0, limit)
 	for rows.Next() {
-		var entry domain.Entry
+		var entry EnrichmentCandidate
 		var updated, attemptedHash string
-		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.URL,
+		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.feedURL, &entry.feedCreatedAt, &entry.Identity, &entry.URL,
 			&entry.Title, &updated, &entry.HTML, &entry.Text, &attemptedHash); err != nil {
 			return nil, fmt.Errorf("scan enrichment candidate: %w", err)
 		}
 		entry.UpdatedAt = parseTime(updated)
-		if !article.Candidate(entry) {
+		if !article.Candidate(entry.Entry) {
 			continue
 		}
 		entry.EnrichmentInputHash = article.InputHash(entry.URL, entry.HTML, entry.UpdatedAt)
@@ -362,28 +387,16 @@ func (s *Store) EnrichmentCandidates(ctx context.Context, feedID int64, limit in
 	return candidates, nil
 }
 
-func (s *Store) SaveEnrichment(ctx context.Context, entryID int64, inputHash string, content article.Content) error {
-	now := formatTime(time.Now())
-	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_content
- (entry_id, status, html, searchable_text, source_url, input_hash, attempted_at, fetched_at, last_error)
- VALUES (?, 'succeeded', ?, ?, ?, ?, ?, ?, '')
- ON CONFLICT(entry_id) DO UPDATE SET status='succeeded', html=excluded.html,
- searchable_text=excluded.searchable_text, source_url=excluded.source_url,
- input_hash=excluded.input_hash, attempted_at=excluded.attempted_at,
- fetched_at=excluded.fetched_at, last_error=''`,
-		entryID, content.HTML, content.Text, content.SourceURL, inputHash, now, now)
-	if err != nil {
-		return fmt.Errorf("save entry enrichment: %w", err)
-	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+// SaveEnrichment returns false, nil when the candidate is obsolete or its input
+// has already been attempted. Only an applied, committed write returns true.
+func (s *Store) SaveEnrichment(ctx context.Context, candidate EnrichmentCandidate, content article.Content) (bool, error) {
+	return s.writeEnrichment(ctx, candidate, &content, "")
 }
 
 // RecordEnrichmentError records an attempted input without discarding a prior
 // successful overlay. Entries with no successful overlay remain feed-backed.
-func (s *Store) RecordEnrichmentError(ctx context.Context, entryID int64, inputHash string, enrichmentErr error) error {
+// Like SaveEnrichment, it returns false, nil for obsolete or already attempted work.
+func (s *Store) RecordEnrichmentError(ctx context.Context, candidate EnrichmentCandidate, enrichmentErr error) (bool, error) {
 	message := ""
 	if enrichmentErr != nil {
 		message = enrichmentErr.Error()
@@ -391,20 +404,58 @@ func (s *Store) RecordEnrichmentError(ctx context.Context, entryID int64, inputH
 			message = string(characters[:2000])
 		}
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO entry_content
+	return s.writeEnrichment(ctx, candidate, nil, message)
+}
+
+func (s *Store) writeEnrichment(ctx context.Context, candidate EnrichmentCandidate, content *article.Content, message string) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin enrichment: %w", err)
+	}
+	defer tx.Rollback()
+	var entryURL, html, updated, attemptedHash string
+	err = tx.QueryRowContext(ctx, `SELECT e.url, e.html, e.updated_at, COALESCE(ec.input_hash, '')
+ FROM entries e JOIN feeds f ON f.id=e.feed_id
+ LEFT JOIN entry_content ec ON ec.entry_id=e.id
+ WHERE e.id=? AND e.feed_id=? AND e.identity=? AND f.url=? AND f.created_at=?`,
+		candidate.ID, candidate.FeedID, candidate.Identity, candidate.feedURL, candidate.feedCreatedAt).
+		Scan(&entryURL, &html, &updated, &attemptedHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check enrichment input: %w", err)
+	}
+	if article.InputHash(entryURL, html, parseTime(updated)) != candidate.EnrichmentInputHash ||
+		attemptedHash == candidate.EnrichmentInputHash {
+		return false, nil
+	}
+	now := formatTime(time.Now())
+	if content != nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO entry_content
+ (entry_id, status, html, searchable_text, source_url, input_hash, attempted_at, fetched_at, last_error)
+ VALUES (?, 'succeeded', ?, ?, ?, ?, ?, ?, '')
+ ON CONFLICT(entry_id) DO UPDATE SET status='succeeded', html=excluded.html,
+ searchable_text=excluded.searchable_text, source_url=excluded.source_url,
+ input_hash=excluded.input_hash, attempted_at=excluded.attempted_at,
+ fetched_at=excluded.fetched_at, last_error=''`,
+			candidate.ID, content.HTML, content.Text, content.SourceURL, candidate.EnrichmentInputHash, now, now)
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO entry_content
  (entry_id, status, input_hash, attempted_at, last_error)
  VALUES (?, 'failed', ?, ?, ?)
  ON CONFLICT(entry_id) DO UPDATE SET
  status=CASE WHEN entry_content.status='succeeded' THEN 'succeeded' ELSE 'failed' END,
  input_hash=excluded.input_hash, attempted_at=excluded.attempted_at,
- last_error=excluded.last_error`, entryID, inputHash, formatTime(time.Now()), message)
+ last_error=excluded.last_error`, candidate.ID, candidate.EnrichmentInputHash, now, message)
+	}
 	if err != nil {
-		return fmt.Errorf("record entry enrichment error: %w", err)
+		return false, fmt.Errorf("write entry enrichment: %w", err)
 	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit enrichment: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func (s *Store) SetRead(ctx context.Context, id int64, read bool) error {
