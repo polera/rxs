@@ -5,8 +5,8 @@
 # `go list -deps`: the latter aborts partway through when cross-compiling,
 # because modernc.org/libc has subpackages whose files are excluded by build
 # constraints on non-Linux targets, and silently omits everything it never
-# reached. The dependency set also genuinely varies by platform (x/termios on
-# unix, x/windows on Windows), so run this once per build target.
+# reached. The dependency set also genuinely varies by platform, so run this
+# once per build target.
 #
 # Usage: scripts/gen-licenses.sh <binary> [output-file]
 

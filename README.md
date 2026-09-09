@@ -35,10 +35,10 @@ go install github.com/polera/rxs/cmd/rxs@latest
 rxs
 ```
 
-Precompiled binaries for Linux, macOS, Windows, and FreeBSD on amd64 and arm64 are also
+Precompiled binaries for Linux, macOS, and FreeBSD on amd64 and arm64 are also
 available from [GitHub Releases](https://github.com/polera/rxs/releases/latest).
-Download the archive for your platform, extract `rxs` (`rxs.exe` on Windows),
-and place it somewhere on your `PATH`. Each release includes `checksums.txt`
+Download the archive for your platform, extract `rxs`, and place it somewhere
+on your `PATH`. Each release includes `checksums.txt`
 for verifying the download.
 
 rxs checks GitHub Releases once a day when starting the interactive UI. If a
@@ -69,8 +69,7 @@ rxs add https://example.com/feed.xml
 
 The database lives in the platform user-data directory by default (`$XDG_DATA_HOME/rxs/rxs.db` or `~/.local/share/rxs/rxs.db` on Linux and FreeBSD). Pass `-db PATH` to use a different database. No configuration file is required.
 
-Database paths are literal filenames, not SQLite connection strings. On Windows,
-use a local drive path; UNC and device paths are not supported.
+Database paths are literal filenames, not SQLite connection strings.
 
 Use only one rxs process per database. Concurrent schema migration and multiple
 instances sharing a database are not supported. On Linux and FreeBSD, a relative
@@ -277,15 +276,15 @@ results still depend on the current advisory database and network availability.
 
 Use `make fuzz` for bounded parser fuzz runs and `make bench` for repeated benchmark
 samples with allocation reporting. The full benchmark matrix includes 100,000-entry
-storage stress cases and can take several minutes. See [PERFORMANCE.md](PERFORMANCE.md)
-for focused commands, profiling, local measurements, and their limitations.
+storage stress cases and can take several minutes. See the
+[rendering benchmarks](internal/render/BENCHMARKS.md) and
+[storage performance notes](internal/store/PERFORMANCE.md) for focused commands,
+profiling, local measurements, and their limitations.
 
-CI runs tests and vet on Linux and native Windows, plus race checks, bounded fuzzing,
-and license checks on Linux. Native Windows tests exercise executable replacement,
-rollback, and saved-file behavior; cross-compilation alone does not validate those.
+CI runs tests, vet, race checks, bounded fuzzing, and license checks on Linux.
 
-Release workflows build Linux, macOS, Windows, and FreeBSD binaries for amd64 and arm64,
-with CGO disabled.
+Release workflows build Linux, macOS, and FreeBSD binaries for amd64 and arm64 with
+CGO disabled.
 
 ## License
 

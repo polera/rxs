@@ -27,4 +27,6 @@ Type "l"
 Sleep 500ms
 Enter
 Sleep 1s
+Tab
+Sleep 500ms
 Screenshot assets/rxs-reader.png

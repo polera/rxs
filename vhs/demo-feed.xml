@@ -13,6 +13,8 @@
       <description><![CDATA[
         <p>The web is still at its best when it feels like a library: quiet, durable, and yours to explore.</p>
 
+        <p>Technical writing stays readable too. rxs turns notation such as $\vec{x} = (x_1, x_2)$ and $$\widehat{f}(\xi) = \int_{-\infty}^{\infty} f(x)e^{-2\pi i x \xi}\,dx$$ into a compact terminal-friendly approximation. <a href="https://example.com/local-first/technical-feeds">Follow technical feeds without leaving the terminal</a>.</p>
+
         <h2>Keep the useful parts close</h2>
         <p>rxs saves downloaded articles in a local SQLite database, so a train tunnel or flaky connection never interrupts your reading list.</p>
 

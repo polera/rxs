@@ -23,12 +23,8 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: Test
+    runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -46,15 +42,12 @@ jobs:
         run: go vet ./...
 
       - name: Race detector
-        if: runner.os == 'Linux'
         run: go test -race -count=1 ./...
 
       - name: Bounded parser fuzzing
-        if: runner.os == 'Linux'
         run: make fuzz
 
       - name: Check dependency licenses
-        if: runner.os == 'Linux'
         run: make license-check
 
   build:
@@ -67,7 +60,6 @@ jobs:
         goos:
           - linux
           - darwin
-          - windows
           - freebsd
         goarch:
           - amd64
@@ -96,16 +88,11 @@ jobs:
           fi
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          binary="rxs"
-          if [ "$GOOS" = "windows" ]; then
-            binary="rxs.exe"
-          fi
-
           mkdir -p dist/package
           go build \
             -trimpath \
             -ldflags "-s -w -X main.version=$version -X main.commit=$GITHUB_SHA -X main.date=$build_date" \
-            -o "dist/package/$binary" \
+            -o dist/package/rxs \
             ./cmd/rxs
 
       - name: Collect third-party licenses
@@ -113,14 +100,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          binary="rxs"
-          if [ "$GOOS" = "windows" ]; then
-            binary="rxs.exe"
-          fi
-
           cp LICENSE dist/package/LICENSE
           ./scripts/gen-licenses.sh \
-            "dist/package/$binary" \
+            dist/package/rxs \
             dist/package/THIRD_PARTY_LICENSES.txt
 
       - name: Package binary
@@ -129,18 +111,12 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           archive="rxs_${GOOS}_${GOARCH}"
-          if [ "$GOOS" = "windows" ]; then
-            (cd dist/package && zip "../${archive}.zip" rxs.exe LICENSE THIRD_PARTY_LICENSES.txt)
-          else
-            tar -C dist/package -czf "dist/${archive}.tar.gz" rxs LICENSE THIRD_PARTY_LICENSES.txt
-          fi
+          tar -C dist/package -czf "dist/${archive}.tar.gz" rxs LICENSE THIRD_PARTY_LICENSES.txt
 
       - name: Upload binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rxs_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: ${{ inputs.retention-days || 7 }}
