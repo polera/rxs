@@ -1142,6 +1142,130 @@ func TestFeedFilterMatchesTitleAndURLAndCanBeCleared(t *testing.T) {
 	}
 }
 
+func TestRemoveActiveFilterKey(t *testing.T) {
+	t.Run("feed filter", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.feedFilter = "first"
+		model.applyFeedSearch()
+		model.feedCursor = 1
+		model.entryCursor = 1
+		model.filter.StarredOnly = true
+
+		model, cmd := update(t, model, key('x'))
+
+		if cmd == nil || model.feedFilter != "" || len(model.feeds) != len(model.allFeeds) {
+			t.Fatalf("removed feed filter: term=%q feeds=%d/%d cmd=%v", model.feedFilter, len(model.feeds), len(model.allFeeds), cmd)
+		}
+		if model.feedCursor != 0 || model.entryCursor != 0 || model.filter.FeedID != 0 || model.filter.StarredOnly {
+			t.Fatalf("feed selection was not reset: cursor=%d entry=%d filter=%+v", model.feedCursor, model.entryCursor, model.filter)
+		}
+		if model.status != "Feed filter cleared" {
+			t.Fatalf("status = %q, want feed filter cleared", model.status)
+		}
+	})
+
+	t.Run("article search", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.active = articlesPane
+		model.entryCursor = 1
+		model.filter = domain.EntryFilter{Search: "first", UnreadOnly: true, FeedID: 1, StarredOnly: true}
+
+		model, cmd := update(t, model, key('x'))
+
+		if cmd == nil || model.filter.Search != "" || model.entryCursor != 0 {
+			t.Fatalf("removed article search: cursor=%d filter=%+v cmd=%v", model.entryCursor, model.filter, cmd)
+		}
+		if !model.filter.UnreadOnly || model.filter.FeedID != 1 || !model.filter.StarredOnly {
+			t.Fatalf("removing search changed other filters: %+v", model.filter)
+		}
+		if model.status != "Search cleared" {
+			t.Fatalf("status = %q, want search cleared", model.status)
+		}
+	})
+
+	t.Run("no active filter", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.status = "unchanged"
+
+		model, cmd := update(t, model, key('x'))
+
+		if cmd != nil || model.status != "unchanged" {
+			t.Fatalf("x without a filter returned status=%q cmd=%v", model.status, cmd)
+		}
+	})
+}
+
+func TestRemoveActiveFilterFromInputOverlay(t *testing.T) {
+	t.Run("feed filter", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.feedFilter = "first"
+		model.applyFeedSearch()
+		model.feedCursor = 1
+		model.entryCursor = 1
+		model.filter.StarredOnly = true
+		model, _ = update(t, model, key('/'))
+
+		model, cmd := update(t, model, ctrlKey('x'))
+
+		if cmd == nil || model.overlay != noOverlay || model.feedFilter != "" || len(model.feeds) != len(model.allFeeds) {
+			t.Fatalf("removed feed filter: overlay=%v term=%q feeds=%d/%d cmd=%v", model.overlay, model.feedFilter, len(model.feeds), len(model.allFeeds), cmd)
+		}
+		if model.feedCursor != 0 || model.entryCursor != 0 || model.filter.FeedID != 0 || model.filter.StarredOnly {
+			t.Fatalf("feed selection was not reset: cursor=%d entry=%d filter=%+v", model.feedCursor, model.entryCursor, model.filter)
+		}
+	})
+
+	t.Run("article search", func(t *testing.T) {
+		model, _ := loadedModel(t)
+		model.active = articlesPane
+		model.entryCursor = 1
+		model.filter = domain.EntryFilter{Search: "first", UnreadOnly: true, FeedID: 1, StarredOnly: true}
+		model, _ = update(t, model, key('/'))
+
+		model, cmd := update(t, model, ctrlKey('x'))
+
+		if cmd == nil || model.overlay != noOverlay || model.filter.Search != "" || model.entryCursor != 0 {
+			t.Fatalf("removed article search: overlay=%v cursor=%d filter=%+v cmd=%v", model.overlay, model.entryCursor, model.filter, cmd)
+		}
+		if !model.filter.UnreadOnly || model.filter.FeedID != 1 || !model.filter.StarredOnly {
+			t.Fatalf("removing search changed other filters: %+v", model.filter)
+		}
+	})
+}
+
+func TestRemoveFilterKeyIsShownContextually(t *testing.T) {
+	model, _ := loadedModel(t)
+	model.width = 240
+	if view := ansi.Strip(model.View().Content); strings.Contains(view, "x remove filter") {
+		t.Fatalf("feed footer shows remove shortcut without a filter: %q", view)
+	}
+
+	model.feedFilter = "feed"
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "x remove filter") {
+		t.Fatalf("filtered feed footer does not show remove shortcut: %q", view)
+	}
+	model.overlay = feedFilterOverlay
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Ctrl+x to remove filter") {
+		t.Fatalf("feed filter modal does not show remove shortcut: %q", view)
+	}
+
+	model.overlay = noOverlay
+	model.active = articlesPane
+	model.filter.Search = "article"
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "x remove filter") {
+		t.Fatalf("searched article footer does not show remove shortcut: %q", view)
+	}
+	model.overlay = searchOverlay
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "Ctrl+x to remove filter") {
+		t.Fatalf("article search modal does not show remove shortcut: %q", view)
+	}
+
+	model.overlay = helpOverlay
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "x               remove active feed or article filter") {
+		t.Fatalf("help does not show remove filter shortcut: %q", view)
+	}
+}
+
 func TestSearchInputPreservesCurrentTerms(t *testing.T) {
 	model, _ := loadedModel(t)
 	model.filter.Search = "current terms"

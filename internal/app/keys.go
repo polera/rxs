@@ -83,6 +83,21 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openInput(feedFilterOverlay, "Filter feeds", "title or URL")
 		}
 		return m.openInput(searchOverlay, "Search", "title or article text")
+	case "x":
+		if m.active == feedsPane && m.feedFilter != "" {
+			m.feedFilter = ""
+			m.applyFeedSearch()
+			m.resetFeedSelection()
+			m.setStatus("Feed filter cleared", false)
+			return m, m.loadCmd()
+		}
+		if m.active == articlesPane && m.filter.Search != "" {
+			m.filter.Search = ""
+			m.entryCursor = 0
+			m.setStatus("Search cleared", false)
+			return m, m.loadCmd()
+		}
+		return m, nil
 	case "i":
 		return m.openInput(importOverlay, "Import OPML", "path/to/subscriptions.opml")
 	case "e":

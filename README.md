@@ -111,6 +111,7 @@ refresh at any time.
 | `r` / `R` | Refresh selected feed / all feeds |
 | `/` in feeds | Filter feeds by title or URL; submit an empty filter to clear |
 | `/` in articles | Search downloaded titles and text; submit an empty search to clear |
+| `x` | Remove the active feed filter or article search (`Ctrl+x` from its input modal) |
 | `u` | Show / hide read articles for this session |
 | `a` / `d` | Add / remove a feed |
 | `o` | Open the original article in the system browser |

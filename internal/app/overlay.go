@@ -84,6 +84,27 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if key == "ctrl+x" {
+		switch m.overlay {
+		case searchOverlay:
+			if m.filter.Search != "" {
+				m.closeOverlay()
+				m.filter.Search = ""
+				m.entryCursor = 0
+				m.setStatus("Search cleared", false)
+				return m, m.loadCmd()
+			}
+		case feedFilterOverlay:
+			if m.feedFilter != "" {
+				m.closeOverlay()
+				m.feedFilter = ""
+				m.applyFeedSearch()
+				m.resetFeedSelection()
+				m.setStatus("Feed filter cleared", false)
+				return m, m.loadCmd()
+			}
+		}
+	}
 	if key == "enter" {
 		value := strings.TrimSpace(m.input.Value())
 		mode := m.overlay

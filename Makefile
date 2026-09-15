@@ -10,7 +10,7 @@ OSV_SCANNER := $(TOOLS_DIR)/osv-scanner-$(OSV_SCANNER_VERSION)/osv-scanner
 GOSEC := $(TOOLS_DIR)/gosec-$(GOSEC_VERSION)/gosec
 BENCHSTAT := $(TOOLS_DIR)/benchstat-$(BENCHSTAT_VERSION)/benchstat
 
-.PHONY: all build license-check licenses test vet race fuzz bench checks staticcheck osv-scanner gosec install-tools clean
+.PHONY: all build license-check license-update licenses test vet race fuzz bench checks staticcheck osv-scanner gosec install-tools clean
 
 all: build
 
@@ -19,6 +19,9 @@ build:
 
 license-check:
 	./scripts/check-licenses.sh
+
+license-update:
+	./scripts/update-licenses.sh
 
 licenses: license-check build
 	./scripts/gen-licenses.sh $(BINARY) THIRD_PARTY_LICENSES.txt

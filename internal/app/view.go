@@ -68,6 +68,11 @@ func (m Model) View() tea.View {
 	} else if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · y copy URL · h articles · c colors · ? help"
 	}
+	if m.active == feedsPane && m.feedFilter != "" {
+		keyText = strings.Replace(keyText, "/ filter", "/ filter · x remove filter", 1)
+	} else if m.active == articlesPane && m.filter.Search != "" {
+		keyText = strings.Replace(keyText, "/ search", "/ search · x remove filter", 1)
+	}
 	keys := m.styles.Dim.Render(m.footerText(keyText))
 	view := m.newView(body + "\n" + status + "\n" + keys)
 	view.AltScreen = true
@@ -226,7 +231,7 @@ func (m Model) overlayView() string {
 		content = "Are you sure you want to quit?\n\nPress y to quit or n to stay."
 	case helpOverlay:
 		title = "Help"
-		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of list or article\nctrl+f / ctrl+b page down / up in feeds or reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\ny               copy article URL\nr / R           refresh selected / all\n/               filter feeds or search articles\nu               show / hide read articles\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq               confirm quit\nesc             close dialog"
+		content = "j/k or arrows  move / scroll\nh/l             change pane\ngg / G          beginning / end of list or article\nctrl+f / ctrl+b page down / up in feeds or reader\nctrl+d / ctrl+u half page down / up in reader\n/ then n / N    find in article; next / previous match\ntab / shift-tab select next / previous link in reader\nenter           open article or selected link\nspace           toggle read\ns               toggle starred\ny               copy article URL\nr / R           refresh selected / all\n/               filter feeds or search articles\nx               remove active feed or article filter\nu               show / hide read articles\na / d           add / remove feed\no               open original\ni / e           import / export OPML\nc               choose color scheme\nq               confirm quit\nesc             close dialog"
 	case colorSchemeOverlay:
 		title = "Color scheme"
 		lines := make([]string, 0, len(m.schemeNames))
@@ -243,7 +248,11 @@ func (m Model) overlayView() string {
 		content = fmt.Sprintf("Remove %q and its downloaded articles?\n\nPress y to remove or n to cancel.", m.deleteTarget.Title)
 	default:
 		title = "Input"
-		content = m.input.View() + "\n\nEnter to confirm · Esc to cancel · Paste with terminal shortcut"
+		actions := "Enter to confirm · Esc to cancel · Paste with terminal shortcut"
+		if (m.overlay == searchOverlay && m.filter.Search != "") || (m.overlay == feedFilterOverlay && m.feedFilter != "") {
+			actions = "Enter to confirm · Ctrl+x to remove filter · Esc to cancel · Paste with terminal shortcut"
+		}
+		content = m.input.View() + "\n\n" + actions
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(m.styles.Scheme.Accent).
 		Padding(1, 2).Width(max(20, min(76, m.width-6))).Render(m.styles.Selected.Render(title) + "\n\n" + content)
