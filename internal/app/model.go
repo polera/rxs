@@ -40,7 +40,13 @@ const (
 	maxReaderTextWidth      = 88
 	readerHorizontalPadding = 2
 	statusLifetime          = 10 * time.Second
+	entryPageSize           = 64
 )
+
+type pageRequest struct {
+	cursor  domain.EntryCursor
+	reverse bool
+}
 
 type pane int
 
@@ -82,6 +88,13 @@ type Model struct {
 	feeds                 []domain.Feed
 	entries               []domain.Entry
 	filter                domain.EntryFilter
+	page                  pageRequest
+	pagePrior             pageRequest
+	hasPrevious           bool
+	hasNext               bool
+	pageLoading           bool
+	pageLeaving           domain.Entry
+	bodyGeneration        uint64
 	feedFilter            string
 	loadGeneration        uint64
 	hasLoaded             bool
@@ -132,10 +145,19 @@ type loadedMsg struct {
 	feeds             []domain.Feed
 	entries           []domain.Entry
 	filter            domain.EntryFilter
+	page              pageRequest
+	hasPrevious       bool
+	hasNext           bool
 	generation        uint64
 	preserveSelection bool
 	initial           bool
 	err               error
+}
+type bodyMsg struct {
+	entry      domain.Entry
+	id         int64
+	generation uint64
+	err        error
 }
 type addMsg struct {
 	feed domain.Feed
@@ -251,7 +273,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeReader()
 		m.checkReaderReachedBottom()
-		return m, nil
+		return m, m.loadBodyCmd()
 	case loadedMsg:
 		if msg.initial {
 			m.initialRefreshPending = true
@@ -259,21 +281,45 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		if m.quitting {
 			return m, nil
 		}
-		if msg.generation != m.loadGeneration || msg.filter != m.filter {
+		if msg.generation != m.loadGeneration || msg.filter != m.filter || msg.page != m.page {
 			return m.finishInitialRefresh()
 		}
 		if msg.err != nil {
+			if m.pageLoading {
+				m.page = m.pagePrior
+			}
+			m.pageLoading = false
+			m.pageLeaving = domain.Entry{}
 			if errors.Is(msg.err, context.Canceled) {
 				return m.finishInitialRefresh()
 			}
 			m.setError(msg.err)
 			return m, nil
 		}
+		if m.pageLoading && msg.page.cursor.ID != 0 && len(msg.entries) == 0 {
+			// Entries can disappear while a page is loading (for example, when
+			// unread-only is active). Recover at the beginning of the same filter.
+			m.resetPage()
+			return m, m.loadCmd()
+		}
 		selectedID := m.selectedEntryID()
+		leaving := m.pageLeaving
+		m.pageLeaving = domain.Entry{}
+		wasPaging := m.pageLoading
 		m.allFeeds, m.entries = msg.feeds, msg.entries
+		m.pageLoading = false
+		m.pagePrior = pageRequest{}
+		m.hasPrevious, m.hasNext = msg.hasPrevious, msg.hasNext
+		m.bodyGeneration++
+		m.lifetime.cancelBody()
 		m.hasLoaded = true
 		m.applyFeedSearch()
 		m.reconcileFeedCursor()
+		if msg.page.reverse {
+			m.entryCursor = max(0, len(m.entries)-1)
+		} else if wasPaging {
+			m.entryCursor = 0
+		}
 		m.clampCursors()
 		if msg.preserveSelection {
 			m.restoreEntrySelection(selectedID)
@@ -293,7 +339,46 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		if m.status == "Loading subscriptions…" || m.status == "Loading articles…" {
 			m.clearStatus()
 		}
-		return m.finishInitialRefresh()
+		var stateCmd tea.Cmd
+		if m.markReadOnScroll && m.active == articlesPane && leaving.ID != 0 && leaving.ID != m.selectedEntryID() && !leaving.Read {
+			after := stateOf(leaving)
+			after.read = true
+			stateCmd = m.queueStateWrite(leaving, after, readField)
+		}
+		if m.initialRefreshPending && !m.busy {
+			next, refresh := m.finishInitialRefresh()
+			updated := next.(Model)
+			return updated, tea.Batch(refresh, stateCmd, updated.loadBodyCmd())
+		}
+		return m, tea.Batch(stateCmd, m.loadBodyCmd())
+	case bodyMsg:
+		if m.quitting || msg.generation != m.bodyGeneration || (m.active == readerPane && (m.readerEntry == nil || m.readerEntry.ID != msg.id)) || (m.active != readerPane && msg.id != m.selectedEntryID()) {
+			return m, nil
+		}
+		if msg.err != nil {
+			if !errors.Is(msg.err, context.Canceled) {
+				m.setError(msg.err)
+			}
+			return m, nil
+		}
+		for i := range m.entries {
+			if m.entries[i].ID == msg.id {
+				msg.entry.Read, msg.entry.Starred, msg.entry.ReadingProgress = m.entries[i].Read, m.entries[i].Starred, m.entries[i].ReadingProgress
+				m.entries[i] = msg.entry
+				break
+			}
+		}
+		if m.readerEntry != nil && m.readerEntry.ID == msg.id && m.readerEntry.Unloaded {
+			msg.entry.Read, msg.entry.Starred, msg.entry.ReadingProgress = m.readerEntry.Read, m.readerEntry.Starred, m.readerEntry.ReadingProgress
+			*m.readerEntry = msg.entry
+			m.renderReaderContent(msg.entry)
+			m.restoreReaderProgress(msg.entry.ReadingProgress)
+			m.readerReachedBottom = false
+			m.checkReaderReachedBottom()
+		} else if m.active != readerPane {
+			m.syncReader()
+		}
+		return m, nil
 	case addMsg:
 		m.busy = false
 		if m.quitting {

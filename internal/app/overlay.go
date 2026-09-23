@@ -31,7 +31,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "y", "enter":
 			m.quitting = true
 			m.lifetime.cancelBackground()
-			if m.active == readerPane && m.readerEntry != nil {
+			if m.active == readerPane && m.readerEntry != nil && !m.readerEntry.Unloaded {
 				after := stateOf(*m.readerEntry)
 				after.progress = m.reader.ScrollPercent()
 				return m, m.queueStateWrite(*m.readerEntry, after, progressField)
@@ -90,7 +90,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.filter.Search != "" {
 				m.closeOverlay()
 				m.filter.Search = ""
-				m.entryCursor = 0
+				m.resetPage()
 				m.setStatus("Search cleared", false)
 				return m, m.loadCmd()
 			}
@@ -120,6 +120,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if value == "" && mode == searchOverlay {
 			m.filter.Search = ""
+			m.resetPage()
 			m.setStatus("Search cleared", false)
 			return m, m.loadCmd()
 		}
@@ -146,7 +147,7 @@ func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		case searchOverlay:
 			m.filter.Search = value
-			m.entryCursor = 0
+			m.resetPage()
 			m.setStatus("Search: "+value, false)
 			return m, m.loadCmd()
 		case feedFilterOverlay:

@@ -165,6 +165,29 @@ func BenchmarkEntriesHistory(b *testing.B) {
 	}
 }
 
+func BenchmarkEntriesPageHistory(b *testing.B) {
+	for _, size := range []int{10000, 100000} {
+		for _, tc := range []struct {
+			name, search string
+			want         int
+		}{{"browse", "", 65}, {"matching", "Summary text", 65}, {"absent", "no-such-article", 0}} {
+			b.Run(fmt.Sprintf("%d/%s", size, tc.name), func(b *testing.B) {
+				s, feedID := benchmarkHistory(b, size, "attempted")
+				filter := domain.EntryFilter{FeedID: feedID, Search: tc.search}
+				ctx := context.Background()
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					page, err := s.EntriesPage(ctx, filter, domain.EntryCursor{}, false, 65)
+					if err != nil || len(page) != tc.want {
+						b.Fatalf("page rows=%d err=%v", len(page), err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkSetReadDuringEnrichment(b *testing.B) {
 	for _, size := range []int{1000, 10000, 100000} {
 		b.Run(fmt.Sprint(size), func(b *testing.B) {

@@ -25,10 +25,16 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			oldCursor, oldEntryID := m.entryCursor, m.selectedEntryID()
+			if m.active == articlesPane && m.pageLoading {
+				return m, nil
+			}
+			if m.active == articlesPane && m.page != (pageRequest{}) && !m.pageLoading {
+				return m, m.pageTo(false, domain.EntryCursor{})
+			}
 			if m.moveToListBoundary(false) {
 				return m, m.loadCmd()
 			}
-			return m, m.markPreviewLeft(oldCursor, oldEntryID)
+			return m, tea.Batch(m.markPreviewLeft(oldCursor, oldEntryID), m.loadBodyCmd())
 		}
 	}
 	if m.active == readerPane {
@@ -93,7 +99,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.active == articlesPane && m.filter.Search != "" {
 			m.filter.Search = ""
-			m.entryCursor = 0
+			m.resetPage()
 			m.setStatus("Search cleared", false)
 			return m, m.loadCmd()
 		}
@@ -170,27 +176,45 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.pendingG = true
 		return m, nil
 	case "G":
+		if m.active == articlesPane && m.pageLoading {
+			return m, nil
+		}
+		if m.active == articlesPane && m.hasNext && !m.pageLoading {
+			return m, m.pageTo(true, domain.EntryCursor{})
+		}
 		oldCursor, oldEntryID := m.entryCursor, m.selectedEntryID()
 		if m.moveToListBoundary(true) {
 			return m, m.loadCmd()
 		}
-		return m, m.markPreviewLeft(oldCursor, oldEntryID)
+		return m, tea.Batch(m.markPreviewLeft(oldCursor, oldEntryID), m.loadBodyCmd())
 	case "j", "down":
+		if m.active == articlesPane && m.pageLoading {
+			return m, nil
+		}
+		if m.active == articlesPane && !m.pageLoading && m.hasNext && m.entryCursor == len(m.entries)-1 && len(m.entries) > 0 {
+			return m, m.pageTo(false, cursorFor(m.entries[len(m.entries)-1]))
+		}
 		oldFeed := m.feedCursor
 		oldCursor, oldEntryID := m.entryCursor, m.selectedEntryID()
 		m.move(1)
 		if m.active == feedsPane && oldFeed != m.feedCursor {
 			return m, m.loadCmd()
 		}
-		return m, m.markPreviewLeft(oldCursor, oldEntryID)
+		return m, tea.Batch(m.markPreviewLeft(oldCursor, oldEntryID), m.loadBodyCmd())
 	case "k", "up":
+		if m.active == articlesPane && m.pageLoading {
+			return m, nil
+		}
+		if m.active == articlesPane && !m.pageLoading && m.hasPrevious && m.entryCursor == 0 && len(m.entries) > 0 {
+			return m, m.pageTo(true, cursorFor(m.entries[0]))
+		}
 		oldFeed := m.feedCursor
 		oldCursor, oldEntryID := m.entryCursor, m.selectedEntryID()
 		m.move(-1)
 		if m.active == feedsPane && oldFeed != m.feedCursor {
 			return m, m.loadCmd()
 		}
-		return m, m.markPreviewLeft(oldCursor, oldEntryID)
+		return m, tea.Batch(m.markPreviewLeft(oldCursor, oldEntryID), m.loadBodyCmd())
 	case "enter":
 		return m.openSelected()
 	case "space":
@@ -201,7 +225,7 @@ func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.copyArticleURL()
 	case "u":
 		m.filter.UnreadOnly = !m.filter.UnreadOnly
-		m.entryCursor = 0
+		m.resetPage()
 		if m.filter.UnreadOnly {
 			m.setStatus("Hiding read articles", false)
 		} else {
@@ -250,6 +274,7 @@ func (m *Model) move(delta int) {
 		m.feedCursor = clamp(m.feedCursor+delta, 0, len(m.feeds)+1)
 		if old != m.feedCursor {
 			m.entryCursor = 0
+			m.resetPage()
 			m.applyFeedFilter()
 			m.setPersistentStatus("Loading articles…", false)
 		}
@@ -259,6 +284,8 @@ func (m *Model) move(delta int) {
 			return
 		}
 		m.entryCursor = target
+		m.bodyGeneration++
+		m.lifetime.cancelBody()
 		m.readerEntry = nil
 		m.syncReader()
 	case readerPane:
@@ -285,6 +312,7 @@ func (m *Model) moveToListBoundary(end bool) bool {
 		}
 		m.feedCursor = target
 		m.entryCursor = 0
+		m.resetPage()
 		m.applyFeedFilter()
 		m.setPersistentStatus("Loading articles…", false)
 		return true
@@ -297,6 +325,8 @@ func (m *Model) moveToListBoundary(end bool) bool {
 			return false
 		}
 		m.entryCursor = target
+		m.bodyGeneration++
+		m.lifetime.cancelBody()
 		m.readerEntry = nil
 		m.syncReader()
 	}
@@ -330,7 +360,8 @@ func (m *Model) applyFeedSearch() {
 }
 
 func (m *Model) resetFeedSelection() {
-	m.feedCursor, m.entryCursor = 0, 0
+	m.feedCursor = 0
+	m.resetPage()
 	m.filter.FeedID, m.filter.StarredOnly = 0, false
 	m.readerEntry = nil
 }
@@ -371,7 +402,7 @@ func (m Model) enterReader() (tea.Model, tea.Cmd) {
 	m.readerReachedBottom = false
 	m.restoreReaderProgress(opened.ReadingProgress)
 	m.checkReaderReachedBottom()
-	return m, nil
+	return m, m.loadBodyCmd()
 }
 
 func (m Model) toggleRead() (tea.Model, tea.Cmd) {
@@ -415,7 +446,7 @@ func (m *Model) leaveReader() tea.Cmd {
 	}
 	entry := m.readerEntry
 	var cmd tea.Cmd
-	if entry != nil {
+	if entry != nil && !entry.Unloaded {
 		after := stateOf(*entry)
 		after.progress = m.reader.ScrollPercent()
 		fields := progressField

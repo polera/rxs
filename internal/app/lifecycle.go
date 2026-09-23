@@ -18,6 +18,7 @@ type lifecycle struct {
 	background  context.Context
 	stop        context.CancelFunc
 	loadCancel  context.CancelFunc
+	bodyCancel  context.CancelFunc
 	closed      bool
 	work        sync.WaitGroup
 	pending     []*stateTask
@@ -57,6 +58,25 @@ func (l *lifecycle) cancelLoad() {
 	defer l.mu.Unlock()
 	if l.loadCancel != nil {
 		l.loadCancel()
+	}
+}
+
+func (l *lifecycle) bodyContext() context.Context {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.bodyCancel != nil {
+		l.bodyCancel()
+	}
+	ctx, cancel := context.WithCancel(l.background)
+	l.bodyCancel = cancel
+	return ctx
+}
+
+func (l *lifecycle) cancelBody() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.bodyCancel != nil {
+		l.bodyCancel()
 	}
 }
 

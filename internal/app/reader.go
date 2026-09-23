@@ -95,8 +95,11 @@ func (m *Model) wrapReaderContent(entry domain.Entry, dateLabel string) string {
 	}
 	meta := strings.Trim(strings.Join(metadata, " · "), " ·")
 	content := entry.Text
+	if entry.Unloaded {
+		content = "Loading article…"
+	}
 	m.readerLinks = nil
-	if entry.HTML != "" {
+	if !entry.Unloaded && entry.HTML != "" {
 		content, m.readerLinks = render.TextWithLinks(entry.HTML, entry.URL, func(index int, link render.Link, text string) string {
 			linkID := fmt.Sprintf("id=rxs-link-%d", index)
 			return m.styles.Link.Hyperlink(link.URL, linkID).Render(text)
@@ -371,7 +374,7 @@ func (m *Model) restoreReaderProgress(progress float64) {
 }
 
 func (m *Model) checkReaderReachedBottom() {
-	if m.active == readerPane && m.readerEntry != nil && m.reader.AtBottom() {
+	if m.active == readerPane && m.readerEntry != nil && !m.readerEntry.Unloaded && m.reader.AtBottom() {
 		m.readerReachedBottom = true
 	}
 }

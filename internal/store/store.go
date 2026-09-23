@@ -308,6 +308,14 @@ const entrySelect = `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title
  CASE WHEN ec.status='succeeded' THEN 'full_article' ELSE 'feed' END,
  COALESCE(es.is_read, 0), COALESCE(es.is_starred, 0),
  COALESCE(es.reading_progress, 0)
+  FROM entries e JOIN feeds f ON f.id=e.feed_id
+ LEFT JOIN entry_state es ON es.entry_id=e.id
+  LEFT JOIN entry_content ec ON ec.entry_id=e.id WHERE 1=1`
+
+const entryMetadataSelect = `SELECT e.id, e.feed_id, f.title, e.identity, e.url, e.title, e.author,
+ e.published_at, e.updated_at,
+ CASE WHEN ec.status='succeeded' THEN 'full_article' ELSE 'feed' END,
+ COALESCE(es.is_read, 0), COALESCE(es.is_starred, 0), COALESCE(es.reading_progress, 0)
  FROM entries e JOIN feeds f ON f.id=e.feed_id
  LEFT JOIN entry_state es ON es.entry_id=e.id
  LEFT JOIN entry_content ec ON ec.entry_id=e.id WHERE 1=1`
@@ -355,6 +363,84 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()
+}
+
+// EntriesPage returns only list metadata. reverse walks toward newer entries;
+// callers reverse those rows for display and request one extra row to detect
+// whether another page exists. A zero cursor starts at either end.
+func (s *Store) EntriesPage(ctx context.Context, filter domain.EntryFilter, cursor domain.EntryCursor, reverse bool, limit int) ([]domain.Entry, error) {
+	query := entryMetadataSelect
+	var args []any
+	if filter.FeedID != 0 {
+		query += " AND e.feed_id=?"
+		args = append(args, filter.FeedID)
+	}
+	if filter.UnreadOnly {
+		query += " AND COALESCE(es.is_read, 0)=0"
+	}
+	if filter.StarredOnly {
+		query += " AND COALESCE(es.is_starred, 0)=1"
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		query += " AND (e.title LIKE ? ESCAPE '\\' OR (CASE WHEN ec.status='succeeded' THEN ec.searchable_text ELSE e.searchable_text END) LIKE ? ESCAPE '\\')"
+		pattern := "%" + escapeLike(search) + "%"
+		args = append(args, pattern, pattern)
+	}
+	if cursor.ID != 0 {
+		comparison := "<"
+		if reverse {
+			comparison = ">"
+		}
+		query += " AND (" + effectiveDateSQL + " " + comparison + " ? OR (" + effectiveDateSQL + " = ? AND e.id " + comparison + " ?))"
+		args = append(args, cursor.Date, cursor.Date, cursor.ID)
+	}
+	order := "DESC"
+	if reverse {
+		order = "ASC"
+	}
+	query += " ORDER BY " + effectiveDateSQL + " " + order + ", e.id " + order + " LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entry page: %w", err)
+	}
+	defer rows.Close()
+	entries := make([]domain.Entry, 0, limit)
+	for rows.Next() {
+		var entry domain.Entry
+		var published, updated string
+		if err := rows.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.Identity,
+			&entry.URL, &entry.Title, &entry.Author, &published, &updated,
+			&entry.ContentSource, &entry.Read, &entry.Starred, &entry.ReadingProgress); err != nil {
+			return nil, fmt.Errorf("scan entry page: %w", err)
+		}
+		entry.PublishedAt, entry.UpdatedAt = parseTime(published), parseTime(updated)
+		entry.SortDate = published
+		if entry.SortDate == "" {
+			entry.SortDate = updated
+		}
+		entry.Unloaded = true
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// Entry loads one full article for the reader, independently of list paging.
+func (s *Store) Entry(ctx context.Context, id int64) (domain.Entry, error) {
+	row := s.db.QueryRowContext(ctx, entrySelect+" AND e.id=?", id)
+	var entry domain.Entry
+	var published, updated string
+	if err := row.Scan(&entry.ID, &entry.FeedID, &entry.FeedTitle, &entry.Identity,
+		&entry.URL, &entry.Title, &entry.Author, &published, &updated, &entry.HTML,
+		&entry.Text, &entry.ContentSource, &entry.Read, &entry.Starred, &entry.ReadingProgress); err != nil {
+		return domain.Entry{}, fmt.Errorf("load article: %w", err)
+	}
+	entry.PublishedAt, entry.UpdatedAt = parseTime(published), parseTime(updated)
+	entry.SortDate = published
+	if entry.SortDate == "" {
+		entry.SortDate = updated
+	}
+	return entry, nil
 }
 
 // EnrichmentCandidate carries the original input and subscription identity.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,6 +13,66 @@ import (
 	"github.com/polera/rxs/internal/opml"
 	"github.com/polera/rxs/internal/safefile"
 )
+
+type pagedStore interface {
+	EntriesPage(context.Context, domain.EntryFilter, domain.EntryCursor, bool, int) ([]domain.Entry, error)
+	Entry(context.Context, int64) (domain.Entry, error)
+}
+
+func cursorFor(entry domain.Entry) domain.EntryCursor {
+	return domain.EntryCursor{Date: entry.SortDate, ID: entry.ID}
+}
+
+func (m *Model) resetPage() {
+	m.page = pageRequest{}
+	m.pagePrior = pageRequest{}
+	m.hasPrevious, m.hasNext = false, false
+	m.pageLoading = false
+	m.pageLeaving = domain.Entry{}
+	m.entryCursor = 0
+}
+
+func (m *Model) pageTo(reverse bool, cursor domain.EntryCursor) tea.Cmd {
+	if m.active == articlesPane && m.entryCursor >= 0 && m.entryCursor < len(m.entries) {
+		m.pageLeaving = m.entries[m.entryCursor]
+	}
+	m.pagePrior = m.page
+	m.page = pageRequest{cursor: cursor, reverse: reverse}
+	m.pageLoading = true
+	m.setPersistentStatus("Loading articles…", false)
+	m.loadGeneration++
+	return m.loadCmdWithOptions(false, false)
+}
+
+func (m Model) loadBodyCmd() tea.Cmd {
+	store, ok := m.store.(pagedStore)
+	if !ok {
+		return nil
+	}
+	// Narrow layouts don't show a preview until the reader is opened.
+	if m.active != readerPane && m.width < 110 {
+		return nil
+	}
+	var entry domain.Entry
+	if m.active == readerPane && m.readerEntry != nil {
+		entry = *m.readerEntry
+	} else if m.entryCursor >= 0 && m.entryCursor < len(m.entries) {
+		entry = m.entries[m.entryCursor]
+	} else {
+		return nil
+	}
+	if !entry.Unloaded {
+		return nil
+	}
+	id, generation := entry.ID, m.bodyGeneration
+	return m.lifetime.command(m.lifetime.bodyContext(), func(ctx context.Context) tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return bodyMsg{id: id, generation: generation, err: err}
+		}
+		body, err := store.Entry(ctx, id)
+		return bodyMsg{id: id, generation: generation, entry: body, err: err}
+	})
+}
 
 func (m Model) openBrowser() (tea.Model, tea.Cmd) {
 	entry, ok := m.articleActionTarget()
@@ -77,21 +138,44 @@ func (m *Model) loadCmdPreserving() tea.Cmd {
 }
 
 func (m Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
-	filter, generation := m.filter, m.loadGeneration
+	filter, generation, page := m.filter, m.loadGeneration, m.page
+	feedsSnapshot := slices.Clone(m.allFeeds)
 	return m.lifetime.command(m.lifetime.backgroundContext(true), func(ctx context.Context) tea.Msg {
 		if err := ctx.Err(); err != nil {
 			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
 		}
-		feeds, err := m.store.Feeds(ctx)
-		if err != nil {
-			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
+		feeds := feedsSnapshot
+		var err error
+		if !m.pageLoading || !m.hasLoaded {
+			feeds, err = m.store.Feeds(ctx)
+			if err != nil {
+				return loadedMsg{filter: filter, page: page, generation: generation, initial: initial, err: err}
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
 		}
-		entries, err := m.store.Entries(ctx, filter)
+		var entries []domain.Entry
+		hasPrevious, hasNext := false, false
+		if store, ok := m.store.(pagedStore); ok {
+			entries, err = store.EntriesPage(ctx, filter, page.cursor, page.reverse, entryPageSize+1)
+			if err == nil {
+				more := len(entries) > entryPageSize
+				if more {
+					entries = entries[:entryPageSize]
+				}
+				if page.reverse {
+					slices.Reverse(entries)
+					hasPrevious, hasNext = more, page.cursor.ID != 0
+				} else {
+					hasPrevious, hasNext = page.cursor.ID != 0, more
+				}
+			}
+		} else {
+			entries, err = m.store.Entries(ctx, filter)
+		}
 		return loadedMsg{
-			feeds: feeds, entries: entries, filter: filter, generation: generation,
+			feeds: feeds, entries: entries, filter: filter, page: page, hasPrevious: hasPrevious, hasNext: hasNext, generation: generation,
 			preserveSelection: preserveSelection, initial: initial, err: err,
 		}
 	})

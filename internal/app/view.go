@@ -17,6 +17,13 @@ func (m Model) View() tea.View {
 		return view
 	}
 	bodyHeight := max(4, m.height-2)
+	articleTitle := "Articles"
+	if m.hasPrevious {
+		articleTitle += " ↑"
+	}
+	if m.hasNext {
+		articleTitle += " ↓"
+	}
 	var body string
 	switch {
 	case m.active == readerPane:
@@ -27,20 +34,20 @@ func (m Model) View() tea.View {
 		rw := m.width - fw - aw
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
 			m.styles.Pane("Feeds", m.active == feedsPane, fw, bodyHeight, m.feedsView(fw-4)),
-			m.styles.Pane("Articles", m.active == articlesPane, aw, bodyHeight, m.entriesView(aw-4)),
+			m.styles.Pane(articleTitle, m.active == articlesPane, aw, bodyHeight, m.entriesView(aw-4)),
 			m.styles.Pane("Reader", m.active == readerPane, rw, bodyHeight, m.reader.View()))
 	case m.width >= 70:
 		left := m.width / 2
 		right := m.width - left
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
 			m.styles.Pane("Feeds", m.active == feedsPane, left, bodyHeight, m.feedsView(left-4)),
-			m.styles.Pane("Articles", m.active == articlesPane, right, bodyHeight, m.entriesView(right-4)))
+			m.styles.Pane(articleTitle, m.active == articlesPane, right, bodyHeight, m.entriesView(right-4)))
 	default:
 		switch m.active {
 		case feedsPane:
 			body = m.styles.Pane("Feeds", true, m.width, bodyHeight, m.feedsView(m.width-4))
 		case articlesPane:
-			body = m.styles.Pane("Articles", true, m.width, bodyHeight, m.entriesView(m.width-4))
+			body = m.styles.Pane(articleTitle, true, m.width, bodyHeight, m.entriesView(m.width-4))
 		case readerPane:
 			body = m.styles.Pane("Reader", true, m.width, bodyHeight, m.reader.View())
 		}
@@ -64,7 +71,7 @@ func (m Model) View() tea.View {
 	status := statusStyle.Render(truncate(statusText, max(1, m.width-2)))
 	keyText := "j/k move · ctrl+f/b page · gg/G start/end · h/l pane · enter read · r refresh · / filter · c colors · ? help"
 	if m.active == articlesPane {
-		keyText = "j/k move · gg/G start/end · h/l pane · enter read · y copy URL · u show/hide read · / search · ? help"
+		keyText = "j/k move/pages · gg/G start/end · h/l pane · enter read · y copy URL · u show/hide read · / search · ? help"
 	} else if m.active == readerPane {
 		keyText = "j/k scroll · ctrl+f/b page · gg/G start/end · / find · n/N matches · y copy URL · h articles · c colors · ? help"
 	}
@@ -177,6 +184,9 @@ func (m Model) menuLine(index int, label string, count, width int) string {
 
 func (m Model) entriesView(width int) string {
 	if len(m.entries) == 0 {
+		if m.pageLoading {
+			return m.styles.Dim.Render("Loading articles…")
+		}
 		return m.styles.Dim.Render("No matching articles.")
 	}
 	start, end := visibleListRange(len(m.entries)*2, m.entryCursor*2, m.listViewHeight())

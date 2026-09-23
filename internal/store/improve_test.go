@@ -346,6 +346,8 @@ func TestOrderingQueryPlans(t *testing.T) {
 			{"all", entrySelect + " ORDER BY " + effectiveDateSQL + " DESC, e.id DESC LIMIT ?", "entries_effective_date", []any{1000}},
 			{"feed", entrySelect + " AND e.feed_id=? ORDER BY " + effectiveDateSQL + " DESC, e.id DESC LIMIT ?", "entries_feed_effective_date", []any{1, 1000}},
 			{"unread", entrySelect + " AND e.feed_id=? AND COALESCE(es.is_read,0)=0 ORDER BY " + effectiveDateSQL + " DESC, e.id DESC LIMIT ?", "entries_feed_effective_date", []any{1, 1000}},
+			{"page", entryMetadataSelect + " AND e.feed_id=? ORDER BY " + effectiveDateSQL + " DESC, e.id DESC LIMIT ?", "entries_feed_effective_date", []any{1, 65}},
+			{"page-seek", entryMetadataSelect + " AND e.feed_id=? AND (" + effectiveDateSQL + " < ? OR (" + effectiveDateSQL + " = ? AND e.id < ?)) ORDER BY " + effectiveDateSQL + " DESC, e.id DESC LIMIT ?", "entries_feed_effective_date", []any{1, "2026-01-01T00:00:00.000000000Z", "2026-01-01T00:00:00.000000000Z", 200, 65}},
 			{"enrichment", enrichmentCandidatesSQL, "entries_enrichment_pending", []any{1, 10}},
 		} {
 			t.Run(fmt.Sprintf("%s/analyzed=%v", test.name, analyzed), func(t *testing.T) {

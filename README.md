@@ -139,6 +139,12 @@ subscriptions subsequently fails, the status reports how many were already added
 
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
 
+Article lists and search results load in small pages as you move with `j` / `k`.
+The arrows in the Articles pane title indicate when more pages are available.
+`gg` and `G` jump to the newest and oldest matching articles across all pages.
+Reader content is loaded when needed, so large libraries do not load every
+article body into memory at startup.
+
 rxs saves each article's reading position when you leave the reader or confirm
 that you want to quit. Opening that article again resumes at the saved position,
 even after restarting rxs or using a different terminal size.

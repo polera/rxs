@@ -38,6 +38,15 @@ type Entry struct {
 	Starred             bool
 	// ReadingProgress is the last saved position in the article, from 0 to 1.
 	ReadingProgress float64
+	// SortDate is the stored effective date used for stable page cursors.
+	SortDate string
+	// Unloaded means HTML and Text must be fetched before showing the article.
+	Unloaded bool
+}
+
+type EntryCursor struct {
+	Date string
+	ID   int64
 }
 
 // EntryFilter describes the local article list. FeedID zero means all feeds.
