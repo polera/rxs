@@ -128,7 +128,7 @@ func (m *Model) paintReaderContent() {
 	m.reader.SetContent(wrapped)
 }
 
-func (m Model) styleReaderHeadings(content string) string {
+func (m *Model) styleReaderHeadings(content string) string {
 	lines := strings.Split(content, "\n")
 	for index, line := range lines {
 		plain := ansi.Strip(line)
@@ -203,7 +203,7 @@ func findReaderMatches(content string, pattern *regexp.Regexp) []readerMatch {
 	return matches
 }
 
-func (m Model) highlightReaderMatches(content string, matches []readerMatch, selected int) string {
+func (m *Model) highlightReaderMatches(content string, matches []readerMatch, selected int) string {
 	lines := strings.Split(content, "\n")
 	byLine := make(map[int][]lipgloss.Range)
 	for index, match := range matches {
@@ -326,7 +326,7 @@ func findReaderLinkSpans(content string, links []render.Link) [][]readerMatch {
 	return spans
 }
 
-func (m Model) currentReaderEntry() domain.Entry {
+func (m *Model) currentReaderEntry() domain.Entry {
 	if m.readerEntry != nil {
 		return *m.readerEntry
 	}
@@ -364,7 +364,7 @@ func (m *Model) resizeReader() {
 	m.checkReaderReachedBottom()
 }
 
-func (m Model) readerTextWidth() int {
+func (m *Model) readerTextWidth() int {
 	return max(1, m.reader.Width()-m.reader.Style.GetHorizontalFrameSize())
 }
 

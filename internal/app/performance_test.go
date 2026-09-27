@@ -11,7 +11,7 @@ import (
 
 var benchmarkView string
 
-func benchmarkReaderModel() Model {
+func benchmarkReaderModel() *Model {
 	m := New(nil, nil, nil)
 	m.width, m.height = 120, 30
 	m.active = articlesPane
@@ -31,7 +31,7 @@ func BenchmarkReader(b *testing.B) {
 			m := benchmarkReaderModel()
 			if action == "Search" || action == "Tab" {
 				next, _ := m.enterReader()
-				m = next.(Model)
+				m = next.(*Model)
 			}
 			if action == "Search" {
 				m.searchReader("needle")
@@ -42,7 +42,7 @@ func BenchmarkReader(b *testing.B) {
 				switch action {
 				case "Opening":
 					next, _ := m.enterReader()
-					benchmarkView = next.(Model).reader.GetContent()
+					benchmarkView = next.(*Model).reader.GetContent()
 				case "Search":
 					m.selectReaderMatch(1)
 				case "Tab":

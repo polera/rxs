@@ -72,7 +72,7 @@ func TestConfirmedQuitCancelsRefreshButDrainsState(t *testing.T) {
 			var refresh tea.Cmd
 			if all {
 				next, cmd := model.refreshAll()
-				model, refresh = next.(Model), cmd
+				model, refresh = next.(*Model), cmd
 			} else {
 				model.busy = true
 				refresh = model.refreshOneCmd(1)
@@ -90,7 +90,7 @@ func TestConfirmedQuitCancelsRefreshButDrainsState(t *testing.T) {
 			}
 			receive(t, gate.canceled)
 			model, progress := update(t, model, first())
-			model, quit := update(t, model, progress())
+			_, quit := update(t, model, progress())
 			if _, ok := quit().(tea.QuitMsg); !ok || len(store.starCalls) != 1 || len(store.progressCalls) != 1 {
 				t.Fatal("quit did not persist state independently of canceled refresh")
 			}
@@ -220,6 +220,9 @@ func TestShutdownRejectsEveryDeferredStoreCommand(t *testing.T) {
 	model.input.SetValue("https://example.test/new")
 	_, add := model.updateOverlay(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	commands = append(commands, add)
+	// Construct a delete command as well; the unexecuted refresh/add commands
+	// left this shared model busy.
+	model.busy = false
 	model.overlay = deleteOverlay
 	model.deleteTarget = model.allFeeds[0]
 	_, remove := model.updateOverlay(key('y'))

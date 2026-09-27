@@ -68,7 +68,7 @@ func TestArticleListActionsIgnoreOldReaderSnapshot(t *testing.T) {
 	model, _ = update(t, model, key('l'))
 	model, _ = update(t, model, loadedMsg{feeds: model.allFeeds, entries: model.entries[1:]})
 	model, _ = update(t, model, key('h'))
-	model, cmd := update(t, model, key('y'))
+	_, cmd := update(t, model, key('y'))
 	if got := fmt.Sprint(primaryCommandMessage(t, cmd)); got != "https://example.test/second" {
 		t.Fatalf("copied %q", got)
 	}
@@ -174,7 +174,7 @@ func TestReaderStateFailureRestoresConfirmedState(t *testing.T) {
 				t.Fatalf("failed snapshot=%#v status=%q", model.readerEntry, model.status)
 			}
 			model, cmd = update(t, model, key(action))
-			model, _ = update(t, model, cmd())
+			_, _ = update(t, model, cmd())
 			calls := store.readCalls
 			if action == 's' {
 				calls = store.starCalls
@@ -234,7 +234,7 @@ func TestReadingProgressIsOrderedAcrossSessionsAndQuit(t *testing.T) {
 		t.Fatal("quit did not wait for pending progress writes")
 	}
 	model, second = update(t, model, first())
-	model, quit = update(t, model, second())
+	_, quit = update(t, model, second())
 	if _, ok := quit().(tea.QuitMsg); !ok {
 		t.Fatal("queue drain did not quit")
 	}
@@ -330,7 +330,7 @@ func TestSupersededInitialLoadStillRefreshesOnce(t *testing.T) {
 				t.Fatal("superseding startup load lost initial refresh")
 			}
 			model, cmd = update(t, model, cmd())
-			model, _ = update(t, model, primaryCommandMessage(t, cmd))
+			_, _ = update(t, model, primaryCommandMessage(t, cmd))
 			if refresher.calls != 1 {
 				t.Fatalf("refresh calls=%d", refresher.calls)
 			}
@@ -358,7 +358,7 @@ func TestDeleteConfirmationUsesCapturedIdentity(t *testing.T) {
 		t.Fatal("opened a duplicate deletion dialog")
 	}
 	model, _ = update(t, model, message)
-	model, _ = update(t, model, key('y'))
+	_, _ = update(t, model, key('y'))
 	if len(store.deleteIDs) != 1 {
 		t.Fatalf("duplicate deletion: %v", store.deleteIDs)
 	}

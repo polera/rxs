@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func (m Model) View() tea.View {
+func (m *Model) View() tea.View {
 	if m.overlay != noOverlay {
 		view := m.newView(m.overlayView())
 		view.AltScreen = true
@@ -86,7 +86,7 @@ func (m Model) View() tea.View {
 	return view
 }
 
-func (m Model) footerText(keyText string) string {
+func (m *Model) footerText(keyText string) string {
 	width := max(1, m.width-2)
 	if m.active != readerPane {
 		return truncate(keyText, width)
@@ -103,14 +103,14 @@ func (m Model) footerText(keyText string) string {
 	return keys + strings.Repeat(" ", padding) + progress
 }
 
-func (m Model) newView(content string) tea.View {
+func (m *Model) newView(content string) tea.View {
 	view := tea.NewView(content)
 	view.ForegroundColor = m.styles.Scheme.Foreground
 	view.BackgroundColor = m.styles.Scheme.Background
 	return view
 }
 
-func (m Model) feedsView(width int) string {
+func (m *Model) feedsView(width int) string {
 	selectedLine := min(m.feedCursor, 1)
 	lineCount := 3
 	for i, source := range m.feeds {
@@ -170,7 +170,7 @@ func (m Model) feedsView(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) menuLine(index int, label string, count, width int) string {
+func (m *Model) menuLine(index int, label string, count, width int) string {
 	countText := ""
 	if count >= 0 {
 		countText = fmt.Sprintf(" %d", count)
@@ -182,7 +182,7 @@ func (m Model) menuLine(index int, label string, count, width int) string {
 	return line
 }
 
-func (m Model) entriesView(width int) string {
+func (m *Model) entriesView(width int) string {
 	if len(m.entries) == 0 {
 		if m.pageLoading {
 			return m.styles.Dim.Render("Loading articles…")
@@ -216,7 +216,7 @@ func (m Model) entriesView(width int) string {
 }
 
 // listViewHeight is the pane's inner height after its border and title line.
-func (m Model) listViewHeight() int {
+func (m *Model) listViewHeight() int {
 	return max(1, m.height-5)
 }
 
@@ -233,7 +233,7 @@ func visibleListRange(lineCount, selectedLine, height int) (int, int) {
 	return start, start + height
 }
 
-func (m Model) overlayView() string {
+func (m *Model) overlayView() string {
 	var title, content string
 	switch m.overlay {
 	case quitOverlay:

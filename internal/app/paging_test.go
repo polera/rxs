@@ -11,7 +11,7 @@ import (
 	"github.com/polera/rxs/internal/store"
 )
 
-func testPagedModel(t *testing.T) Model {
+func testPagedModel(t *testing.T) *Model {
 	t.Helper()
 	repository, err := store.Open(":memory:")
 	if err != nil {

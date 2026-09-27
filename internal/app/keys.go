@@ -10,7 +10,7 @@ import (
 	"github.com/polera/rxs/internal/domain"
 )
 
-func (m Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *Model) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if isNavigationKey(key, m.pendingG) {
 		m.clearStatus()
@@ -366,7 +366,7 @@ func (m *Model) resetFeedSelection() {
 	m.readerEntry = nil
 }
 
-func (m Model) openSelected() (tea.Model, tea.Cmd) {
+func (m *Model) openSelected() (tea.Model, tea.Cmd) {
 	if m.active == feedsPane {
 		m.active = articlesPane
 		return m, m.loadCmd()
@@ -383,7 +383,7 @@ func (m Model) openSelected() (tea.Model, tea.Cmd) {
 // enterReader starts a tracked reading session for the selected article.
 // Reader focus is reachable through Enter as well as pane navigation, and all
 // entry paths must initialize the snapshot and bottom latch used on exit.
-func (m Model) enterReader() (tea.Model, tea.Cmd) {
+func (m *Model) enterReader() (tea.Model, tea.Cmd) {
 	if len(m.entries) == 0 {
 		return m, nil
 	}
@@ -405,7 +405,7 @@ func (m Model) enterReader() (tea.Model, tea.Cmd) {
 	return m, m.loadBodyCmd()
 }
 
-func (m Model) toggleRead() (tea.Model, tea.Cmd) {
+func (m *Model) toggleRead() (tea.Model, tea.Cmd) {
 	entry, ok := m.articleActionTarget()
 	if !ok {
 		return m, nil
@@ -461,7 +461,7 @@ func (m *Model) leaveReader() tea.Cmd {
 	return cmd
 }
 
-func (m Model) toggleStarred() (tea.Model, tea.Cmd) {
+func (m *Model) toggleStarred() (tea.Model, tea.Cmd) {
 	entry, ok := m.articleActionTarget()
 	if !ok {
 		return m, nil
@@ -471,7 +471,7 @@ func (m Model) toggleStarred() (tea.Model, tea.Cmd) {
 	return m, m.queueStateWrite(entry, after, starredField)
 }
 
-func (m Model) refreshSelected() (tea.Model, tea.Cmd) {
+func (m *Model) refreshSelected() (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
 	}
@@ -484,7 +484,7 @@ func (m Model) refreshSelected() (tea.Model, tea.Cmd) {
 	return m, m.refreshOneCmd(feed.ID)
 }
 
-func (m Model) refreshAll() (tea.Model, tea.Cmd) {
+func (m *Model) refreshAll() (tea.Model, tea.Cmd) {
 	if m.busy || len(m.allFeeds) == 0 {
 		return m, nil
 	}
@@ -500,7 +500,7 @@ func (m Model) refreshAll() (tea.Model, tea.Cmd) {
 	})
 }
 
-func (m Model) refreshOneCmd(id int64) tea.Cmd {
+func (m *Model) refreshOneCmd(id int64) tea.Cmd {
 	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
 		if err := ctx.Err(); err != nil {
 			return refreshMsg{canceled: true}

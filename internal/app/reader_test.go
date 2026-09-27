@@ -56,7 +56,7 @@ func TestReaderCacheInvalidatesWhenRelativeDateChanges(t *testing.T) {
 func TestReaderCacheInvalidation(t *testing.T) {
 	m := benchmarkReaderModel()
 	next, _ := m.enterReader()
-	m = next.(Model)
+	m = next.(*Model)
 	m.searchReader("needle")
 	m.reader.SetYOffset(8)
 	wrapped, links, matches, pattern := m.readerCache.wrapped, &m.readerLinks[0], &m.readerMatches[0], m.readerCache.pattern
@@ -148,7 +148,7 @@ func TestReaderSearchAndTabPreserveOSCIdentity(t *testing.T) {
 	m.width, m.height, m.active = 36, 10, articlesPane
 	m.entries = []domain.Entry{{ID: 1, URL: "https://example.test/article", HTML: "<p>\u4e00 e\u0301 " + `<a href="/same">needle [a.b] long link words that wrap across several lines</a></p>` + strings.Repeat("<p>filler</p>", 20) + `<p><a href="/same">needle [a.b] again</a></p>`}}
 	next, _ := m.enterReader()
-	m = next.(Model)
+	m = next.(*Model)
 	base := m.reader.GetContent()
 	spans := findReaderLinkSpans(base, m.readerLinks)
 	if len(spans) != 2 || len(spans[0]) < 2 || spans[0][0].start != 5 {
@@ -191,7 +191,7 @@ func TestReaderSearchAcrossLinkBoundaries(t *testing.T) {
 	m.active = articlesPane
 	m.entries = []domain.Entry{{ID: 1, URL: "https://example.test/article", HTML: `<p>prefix <a href="/one">one</a> <a href="/two">two</a> suffix</p>`}}
 	next, _ := m.enterReader()
-	m = next.(Model)
+	m = next.(*Model)
 	base := m.reader.GetContent()
 	want := findReaderLinkSpans(base, m.readerLinks)
 	m.searchReader("prefix one two suffix")
@@ -211,7 +211,7 @@ func TestReaderSearchAcrossLinkBoundaries(t *testing.T) {
 func TestReaderSearchStartsNearScrollAndNoMatchPreservesScroll(t *testing.T) {
 	m := benchmarkReaderModel()
 	next, _ := m.enterReader()
-	m = next.(Model)
+	m = next.(*Model)
 	m.reader.SetYOffset(50)
 	m.searchReader("needle")
 	if m.readerMatches[m.readerMatchCursor].line < 50 {
@@ -249,7 +249,7 @@ func TestReaderOpeningRestoresProgressAfterGeometry(t *testing.T) {
 	m.readerReachedBottom = true
 	m.readerLinkCursor = 4
 	next, _ := m.enterReader()
-	m = next.(Model)
+	m = next.(*Model)
 	if m.readerCache.width != m.readerTextWidth() || m.readerCache.width != maxReaderTextWidth || !m.reader.AtTop() || m.readerReachedBottom || m.readerLinkCursor != -1 {
 		t.Fatal("opening retained preview geometry, scroll, link selection, or completion latch")
 	}

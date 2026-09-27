@@ -44,7 +44,7 @@ func (m *Model) pageTo(reverse bool, cursor domain.EntryCursor) tea.Cmd {
 	return m.loadCmdWithOptions(false, false)
 }
 
-func (m Model) loadBodyCmd() tea.Cmd {
+func (m *Model) loadBodyCmd() tea.Cmd {
 	store, ok := m.store.(pagedStore)
 	if !ok {
 		return nil
@@ -74,7 +74,7 @@ func (m Model) loadBodyCmd() tea.Cmd {
 	})
 }
 
-func (m Model) openBrowser() (tea.Model, tea.Cmd) {
+func (m *Model) openBrowser() (tea.Model, tea.Cmd) {
 	entry, ok := m.articleActionTarget()
 	if !ok {
 		return m, nil
@@ -82,7 +82,7 @@ func (m Model) openBrowser() (tea.Model, tea.Cmd) {
 	return m.openURL(entry.URL, "original article")
 }
 
-func (m Model) copyArticleURL() (tea.Model, tea.Cmd) {
+func (m *Model) copyArticleURL() (tea.Model, tea.Cmd) {
 	entry, ok := m.articleActionTarget()
 	if !ok {
 		return m, nil
@@ -96,7 +96,7 @@ func (m Model) copyArticleURL() (tea.Model, tea.Cmd) {
 	return m, tea.SetClipboard(url)
 }
 
-func (m Model) openURL(url, target string) (tea.Model, tea.Cmd) {
+func (m *Model) openURL(url, target string) (tea.Model, tea.Cmd) {
 	if m.tuiBrowser != nil {
 		command, err := m.tuiBrowser(url)
 		if err != nil {
@@ -117,7 +117,7 @@ func (m Model) openURL(url, target string) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg { return browserMsg{target: target, err: m.browser(url)} }
 }
 
-func (m Model) articleActionTarget() (domain.Entry, bool) {
+func (m *Model) articleActionTarget() (domain.Entry, bool) {
 	if m.active == readerPane && m.readerEntry != nil {
 		return *m.readerEntry, true
 	}
@@ -137,7 +137,7 @@ func (m *Model) loadCmdPreserving() tea.Cmd {
 	return m.loadCmdWithOptions(true, false)
 }
 
-func (m Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
+func (m *Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 	filter, generation, page := m.filter, m.loadGeneration, m.page
 	feedsSnapshot := slices.Clone(m.allFeeds)
 	return m.lifetime.command(m.lifetime.backgroundContext(true), func(ctx context.Context) tea.Msg {
@@ -181,21 +181,22 @@ func (m Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 	})
 }
 
-func (m Model) finishInitialRefresh() (tea.Model, tea.Cmd) {
+func (m *Model) finishInitialRefresh() (tea.Model, tea.Cmd) {
 	if !m.initialRefreshPending || !m.hasLoaded || m.busy || m.quitting {
 		return m, nil
 	}
 	m.initialRefreshPending = false
+	status, hadError := m.status, m.errStatus
 	next, cmd := m.refreshAll()
-	if m.errStatus {
-		updated := next.(Model)
-		updated.setStatus(m.status, true)
+	if hadError {
+		updated := next.(*Model)
+		updated.setStatus(status, true)
 		return updated, cmd
 	}
 	return next, cmd
 }
 
-func (m Model) importCmd(path string) tea.Cmd {
+func (m *Model) importCmd(path string) tea.Cmd {
 	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
 		if err := ctx.Err(); err != nil {
 			return importMsg{err: err}
@@ -226,7 +227,7 @@ func (m Model) importCmd(path string) tea.Cmd {
 	})
 }
 
-func (m Model) exportCmd(path string) tea.Cmd {
+func (m *Model) exportCmd(path string) tea.Cmd {
 	store := m.store
 	return m.lifetime.command(m.lifetime.backgroundContext(false), func(ctx context.Context) tea.Msg {
 		clean := filepath.Clean(path)
@@ -259,7 +260,7 @@ func (m *Model) clampCursors() {
 	m.entryCursor = clamp(m.entryCursor, 0, len(m.entries)-1)
 }
 
-func (m Model) selectedEntryID() int64 {
+func (m *Model) selectedEntryID() int64 {
 	if m.entryCursor >= 0 && m.entryCursor < len(m.entries) {
 		return m.entries[m.entryCursor].ID
 	}

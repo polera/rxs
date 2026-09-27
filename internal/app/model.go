@@ -189,13 +189,13 @@ type colorSchemeSavedMsg struct {
 }
 type statusTimeoutMsg struct{ generation uint64 }
 
-func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles) Model {
+func New(store Store, refresher Refresher, browser Browser, styles ...ui.Styles) *Model {
 	return newModel(store, refresher, browser, nil, modelStyles(styles))
 }
 
 // NewWithTUIBrowser configures an interactive browser that temporarily takes
 // over the terminal and returns control to the feed reader when it exits.
-func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser, styles ...ui.Styles) Model {
+func NewWithTUIBrowser(store Store, refresher Refresher, browser TUIBrowser, styles ...ui.Styles) *Model {
 	return newModel(store, refresher, nil, browser, modelStyles(styles))
 }
 
@@ -234,11 +234,11 @@ func modelStyles(configured []ui.Styles) ui.Styles {
 	return styles
 }
 
-func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIBrowser, styles ui.Styles) Model {
+func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIBrowser, styles ui.Styles) *Model {
 	input := textinput.New()
 	input.SetWidth(60)
 	reader := viewport.New()
-	model := Model{
+	model := &Model{
 		lifetime: newLifecycle(),
 		store:    store, refresher: refresher, browser: browser, tuiBrowser: tuiBrowser,
 		styles: styles, input: input, reader: reader, width: 100, height: 30,
@@ -251,11 +251,11 @@ func newModel(store Store, refresher Refresher, browser Browser, tuiBrowser TUIB
 	return model
 }
 
-func (m Model) Init() tea.Cmd { return m.loadCmdWithOptions(false, true) }
+func (m *Model) Init() tea.Cmd { return m.loadCmdWithOptions(false, true) }
 
-func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
+func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 	defer func() {
-		updated, ok := next.(Model)
+		updated, ok := next.(*Model)
 		if !ok || !updated.statusTimerPending {
 			return
 		}
@@ -347,7 +347,7 @@ func (m Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		}
 		if m.initialRefreshPending && !m.busy {
 			next, refresh := m.finishInitialRefresh()
-			updated := next.(Model)
+			updated := next.(*Model)
 			return updated, tea.Batch(refresh, stateCmd, updated.loadBodyCmd())
 		}
 		return m, tea.Batch(stateCmd, m.loadBodyCmd())

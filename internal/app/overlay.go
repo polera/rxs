@@ -11,7 +11,7 @@ import (
 	"github.com/polera/rxs/internal/ui"
 )
 
-func (m Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
+func (m *Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 	msg, isKeyPress := message.(tea.KeyPressMsg)
 	if !isKeyPress {
 		if isInputOverlay(m.overlay) {
@@ -182,7 +182,7 @@ func isInputOverlay(mode overlay) bool {
 	}
 }
 
-func (m Model) openColorSchemeChooser() (tea.Model, tea.Cmd) {
+func (m *Model) openColorSchemeChooser() (tea.Model, tea.Cmd) {
 	m.overlay = colorSchemeOverlay
 	m.schemeNames = ui.SchemeNames()
 	m.schemeCursor = 0
@@ -196,7 +196,7 @@ func (m Model) openColorSchemeChooser() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) updateColorSchemeChooser(key string) (tea.Model, tea.Cmd) {
+func (m *Model) updateColorSchemeChooser(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "ctrl+c", "q":
 		m.applyStyles(m.schemeOriginal)
@@ -269,7 +269,7 @@ func (m *Model) openInput(mode overlay, prompt, placeholder string) (tea.Model, 
 	m.input.Prompt = prompt + ": "
 	m.input.Placeholder = placeholder
 	m.input.SetWidth(max(20, min(70, m.width-10)))
-	return *m, m.input.Focus()
+	return m, m.input.Focus()
 }
 
 func (m *Model) closeOverlay() {

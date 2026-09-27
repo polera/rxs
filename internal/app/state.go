@@ -89,7 +89,7 @@ func (m *Model) queueStateWrite(entry domain.Entry, after entryState, fields sta
 	return nil
 }
 
-func (m Model) stateWriteCmd(write stateWrite) tea.Cmd {
+func (m *Model) stateWriteCmd(write stateWrite) tea.Cmd {
 	store := m.store
 	return func() tea.Msg {
 		l := m.lifetime
@@ -143,7 +143,7 @@ func executeStateWrite(ctx context.Context, store Store, write stateWrite) state
 	return msg
 }
 
-func (m Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
+func (m *Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
 	if len(m.stateWrites) == 0 || m.stateWrites[0].revision != msg.write.revision {
 		return m, nil
 	}

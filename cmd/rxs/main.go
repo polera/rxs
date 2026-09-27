@@ -108,7 +108,7 @@ func runArgs(args []string, stdout, stderr io.Writer) (runErr error) {
 	}
 	defer repository.Close()
 	refresher := newFeedService(repository, currentVersion, config)
-	var model app.Model
+	var model *app.Model
 	if config.Browser.Mode == platform.BrowserTUI {
 		model = app.NewWithTUIBrowser(repository, refresher, func(rawURL string) (*exec.Cmd, error) {
 			return platform.BrowserCommand(config.Browser, rawURL)
@@ -295,7 +295,7 @@ func addFeed(ctx context.Context, dbPath, feedURL string, output io.Writer, conf
 }
 
 func newFeedService(repository *store.Store, currentVersion string, config platform.Config) *feedservice.Service {
-	options := []feedservice.Option{}
+	var options []feedservice.Option
 	if config.Content.FullArticles == platform.FullArticlesAuto {
 		options = append(options, feedservice.WithArticleExtractor(article.NewExtractor(currentVersion)))
 	}

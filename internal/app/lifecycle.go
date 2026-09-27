@@ -126,7 +126,7 @@ func (l *lifecycle) acknowledgeState(revision uint64) {
 // work but still join it: dependencies must honor context for prompt shutdown;
 // returning early and racing Store.Close is never safe. Callers must not run
 // Update concurrently with Shutdown. Repeated calls return the first result.
-func (m Model) Shutdown(ctx context.Context) error {
+func (m *Model) Shutdown(ctx context.Context) error {
 	l := m.lifetime
 	l.shutdown.Do(func() {
 		l.mu.Lock()

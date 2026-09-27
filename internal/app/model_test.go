@@ -136,10 +136,10 @@ func ctrlKey(value rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: value, Mod: tea.ModCtrl})
 }
 
-func update(t *testing.T, model Model, msg tea.Msg) (Model, tea.Cmd) {
+func update(t *testing.T, model *Model, msg tea.Msg) (*Model, tea.Cmd) {
 	t.Helper()
 	next, cmd := model.Update(msg)
-	got, ok := next.(Model)
+	got, ok := next.(*Model)
 	if !ok {
 		t.Fatalf("Update returned %T", next)
 	}
@@ -162,7 +162,7 @@ func primaryCommandMessage(t *testing.T, cmd tea.Cmd) tea.Msg {
 	return batch[0]()
 }
 
-func loadedModel(t *testing.T) (Model, *fakeStore) {
+func loadedModel(t *testing.T) (*Model, *fakeStore) {
 	t.Helper()
 	store := &fakeStore{
 		feeds: []domain.Feed{{ID: 1, Title: "Feed", URL: "https://example.test/feed"}},
@@ -206,7 +206,7 @@ func TestInitRefreshesFeedsAfterInitialLoad(t *testing.T) {
 		t.Fatalf("refresh result: status=%q busy=%t cmd=%v", model.status, model.busy, reloadCmd)
 	}
 
-	model, nextCmd := update(t, model, primaryCommandMessage(t, reloadCmd))
+	_, nextCmd := update(t, model, primaryCommandMessage(t, reloadCmd))
 	if nextCmd != nil || refresher.calls != 1 {
 		t.Fatalf("reload scheduled another command: calls=%d cmd=%v", refresher.calls, nextCmd)
 	}
@@ -489,7 +489,7 @@ func TestPreviewMarkReadOnScrollDisabledBoundariesAndAlreadyRead(t *testing.T) {
 		t.Fatal("clamped movement scheduled a write")
 	}
 	model.entries[1].Read = true
-	model, cmd = update(t, model, key('k'))
+	_, cmd = update(t, model, key('k'))
 	if cmd != nil {
 		t.Fatal("leaving an already-read entry scheduled a write")
 	}
@@ -623,7 +623,7 @@ func TestShortReaderArticleStartsAtBottom(t *testing.T) {
 	if !model.readerReachedBottom {
 		t.Fatal("short article did not begin at the bottom")
 	}
-	model, cmd := update(t, model, key('h'))
+	_, cmd := update(t, model, key('h'))
 	if cmd == nil {
 		t.Fatal("returning from a short article did not schedule a read write")
 	}
@@ -987,7 +987,7 @@ func TestPasteIntoInputOverlays(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			model, _ := loadedModel(t)
 			next, _ := model.openInput(tt.mode, "Input", "value")
-			model = next.(Model)
+			model = next.(*Model)
 			model.input.SetValue("leftright")
 			model.input.SetCursor(len("left"))
 
@@ -1068,7 +1068,7 @@ func TestQuitRequiresConfirmation(t *testing.T) {
 	if model.overlay != quitOverlay || cmd != nil {
 		t.Fatalf("ctrl+c returned overlay=%v cmd=%v, want quit confirmation", model.overlay, cmd)
 	}
-	model, cmd = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
+	_, cmd = update(t, model, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter}))
 	if cmd == nil {
 		t.Fatal("confirming quit returned no command")
 	}
@@ -1092,7 +1092,7 @@ func TestConfirmedQuitSavesOpenReaderProgress(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("confirming quit returned no command")
 	}
-	model, cmd = update(t, model, cmd())
+	_, cmd = update(t, model, cmd())
 	if cmd == nil {
 		t.Fatal("saved progress did not schedule quit")
 	}
