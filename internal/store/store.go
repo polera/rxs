@@ -72,6 +72,100 @@ func databaseDSN(path string) (string, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// LoadLastView returns the last completed interactive session for this database.
+func (s *Store) LoadLastView(ctx context.Context) (domain.LastView, bool, error) {
+	var view domain.LastView
+	err := s.db.QueryRowContext(ctx, `SELECT pane, scope, feed_id, feed_url, entry_id,
+		entry_feed_url, entry_identity FROM last_view WHERE id = 1`).
+		Scan(&view.Pane, &view.Scope, &view.FeedID, &view.FeedURL, &view.EntryID,
+			&view.EntryFeedURL, &view.EntryIdentity)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.LastView{}, false, nil
+	}
+	if err != nil {
+		return domain.LastView{}, false, fmt.Errorf("load last view: %w", err)
+	}
+	if view.Scope == "feed" {
+		var exists bool
+		err = s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM feeds WHERE id=? AND url=?)", view.FeedID, view.FeedURL).Scan(&exists)
+		if err != nil {
+			return domain.LastView{}, false, fmt.Errorf("validate last feed: %w", err)
+		}
+		if !exists {
+			view.Scope, view.FeedID, view.FeedURL = "all", 0, ""
+		}
+	}
+	if view.EntryID != 0 {
+		var exists bool
+		err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM entries e JOIN feeds f ON f.id=e.feed_id
+			WHERE e.id=? AND e.identity=? AND f.url=?)`, view.EntryID, view.EntryIdentity, view.EntryFeedURL).Scan(&exists)
+		if err != nil {
+			return domain.LastView{}, false, fmt.Errorf("validate last article: %w", err)
+		}
+		if !exists {
+			view.EntryID, view.EntryFeedURL, view.EntryIdentity = 0, "", ""
+		}
+	}
+	return view, true, nil
+}
+
+func (s *Store) SaveLastView(ctx context.Context, view domain.LastView) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin last view: %w", err)
+	}
+	defer tx.Rollback()
+	if view.Scope == "feed" {
+		var feedURL string
+		err = tx.QueryRowContext(ctx, "SELECT url FROM feeds WHERE id=?", view.FeedID).Scan(&feedURL)
+		if errors.Is(err, sql.ErrNoRows) {
+			view.Scope, view.FeedID, view.FeedURL = "all", 0, ""
+			view.EntryID = 0
+		} else if err != nil {
+			return fmt.Errorf("save last feed: %w", err)
+		} else if view.FeedURL != "" && view.FeedURL != feedURL {
+			view.Scope, view.FeedID, view.FeedURL = "all", 0, ""
+			view.EntryID = 0
+		} else {
+			view.FeedURL = feedURL
+		}
+	}
+	if view.EntryID != 0 {
+		var entryFeedID int64
+		var entryFeedURL, entryIdentity string
+		err = tx.QueryRowContext(ctx, `SELECT e.feed_id, f.url, e.identity FROM entries e
+			JOIN feeds f ON f.id=e.feed_id WHERE e.id=?`, view.EntryID).
+			Scan(&entryFeedID, &entryFeedURL, &entryIdentity)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && ((view.Scope == "feed" && entryFeedID != view.FeedID) ||
+			(view.EntryFeedURL != "" && view.EntryFeedURL != entryFeedURL) ||
+			(view.EntryIdentity != "" && view.EntryIdentity != entryIdentity))) {
+			view.EntryID, view.EntryFeedURL, view.EntryIdentity = 0, "", ""
+		} else if err != nil {
+			return fmt.Errorf("save last article: %w", err)
+		} else {
+			view.EntryFeedURL, view.EntryIdentity = entryFeedURL, entryIdentity
+		}
+	}
+	if view.EntryID == 0 {
+		view.EntryFeedURL, view.EntryIdentity = "", ""
+	}
+	if view.Pane == "reader" && view.EntryID == 0 {
+		view.Pane = "articles"
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO last_view(id, pane, scope, feed_id, feed_url, entry_id, entry_feed_url, entry_identity)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+		pane=excluded.pane, scope=excluded.scope, feed_id=excluded.feed_id, feed_url=excluded.feed_url,
+		entry_id=excluded.entry_id, entry_feed_url=excluded.entry_feed_url, entry_identity=excluded.entry_identity`,
+		view.Pane, view.Scope, view.FeedID, view.FeedURL, view.EntryID, view.EntryFeedURL, view.EntryIdentity)
+	if err != nil {
+		return fmt.Errorf("save last view: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit last view: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -369,7 +463,38 @@ func (s *Store) Entries(ctx context.Context, filter domain.EntryFilter) ([]domai
 // callers reverse those rows for display and request one extra row to detect
 // whether another page exists. A zero cursor starts at either end.
 func (s *Store) EntriesPage(ctx context.Context, filter domain.EntryFilter, cursor domain.EntryCursor, reverse bool, limit int) ([]domain.Entry, error) {
-	query := entryMetadataSelect
+	return s.entriesPage(ctx, filter, cursor, reverse, limit, false)
+}
+
+// EntryPageAt seeks directly to an article's metadata, even when it is far
+// beyond the first page. Missing or filtered-out articles return found=false.
+func (s *Store) EntryPageAt(ctx context.Context, filter domain.EntryFilter, id int64, limit int) ([]domain.Entry, bool, bool, bool, error) {
+	query, args := filteredEntries(`SELECT `+effectiveDateSQL+` FROM entries e JOIN feeds f ON f.id=e.feed_id
+		LEFT JOIN entry_state es ON es.entry_id=e.id
+		LEFT JOIN entry_content ec ON ec.entry_id=e.id WHERE e.id=?`, filter)
+	args = append([]any{id}, args...)
+	var date string
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&date)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, false, false, nil
+	}
+	if err != nil {
+		return nil, false, false, false, fmt.Errorf("locate article page: %w", err)
+	}
+	cursor := domain.EntryCursor{Date: date, ID: id}
+	entries, err := s.entriesPage(ctx, filter, cursor, false, limit+1, true)
+	if err != nil {
+		return nil, false, false, false, err
+	}
+	hasNext := len(entries) > limit
+	if hasNext {
+		entries = entries[:limit]
+	}
+	previous, err := s.EntriesPage(ctx, filter, cursor, true, 1)
+	return entries, len(previous) > 0, hasNext, true, err
+}
+
+func filteredEntries(query string, filter domain.EntryFilter) (string, []any) {
 	var args []any
 	if filter.FeedID != 0 {
 		query += " AND e.feed_id=?"
@@ -386,12 +511,22 @@ func (s *Store) EntriesPage(ctx context.Context, filter domain.EntryFilter, curs
 		pattern := "%" + escapeLike(search) + "%"
 		args = append(args, pattern, pattern)
 	}
+	return query, args
+}
+
+func (s *Store) entriesPage(ctx context.Context, filter domain.EntryFilter, cursor domain.EntryCursor, reverse bool, limit int, inclusive bool) ([]domain.Entry, error) {
+	query := entryMetadataSelect
+	query, args := filteredEntries(query, filter)
 	if cursor.ID != 0 {
 		comparison := "<"
 		if reverse {
 			comparison = ">"
 		}
-		query += " AND (" + effectiveDateSQL + " " + comparison + " ? OR (" + effectiveDateSQL + " = ? AND e.id " + comparison + " ?))"
+		idComparison := comparison
+		if inclusive {
+			idComparison += "="
+		}
+		query += " AND (" + effectiveDateSQL + " " + comparison + " ? OR (" + effectiveDateSQL + " = ? AND e.id " + idComparison + " ?))"
 		args = append(args, cursor.Date, cursor.Date, cursor.ID)
 	}
 	order := "DESC"

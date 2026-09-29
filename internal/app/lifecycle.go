@@ -22,6 +22,7 @@ type lifecycle struct {
 	closed      bool
 	work        sync.WaitGroup
 	pending     []*stateTask
+	lastView    *lastViewTask
 	shutdown    sync.Once
 	shutdownErr error
 }
@@ -120,8 +121,8 @@ func (l *lifecycle) acknowledgeState(revision uint64) {
 
 // Shutdown must be called after Program.Run returns and before closing Store,
 // even when Run fails. It works on the original Model as well as the final copy.
-// It rejects deferred commands, cancels background work, and flushes only intents
-// already queued by Update, in order. Unsampled reader scroll is not an intent.
+// It rejects deferred commands, cancels background work, and flushes queued
+// state before a last-view snapshot. Unsampled reader scroll is not an intent.
 // ctx bounds the final flush, including active state writes. On expiry we cancel
 // work but still join it: dependencies must honor context for prompt shutdown;
 // returning early and racing Store.Close is never safe. Callers must not run
@@ -155,6 +156,20 @@ func (m *Model) Shutdown(ctx context.Context) error {
 			}
 		}
 		l.pending = nil
+		if m.resumeLastView && m.hasLoaded && !m.quitting && l.lastView == nil {
+			// Run returned without a completed quit. Use the final Tea model to
+			// preserve the view after flushing any already-queued state writes.
+			l.lastView = m.newLastViewTask()
+		}
+		if len(errs) == 0 && l.lastView != nil {
+			if l.lastView.result == nil {
+				l.lastView.result = &lastViewMsg{err: l.lastView.run(l.ctx)}
+			}
+			if l.lastView.result.err != nil {
+				errs = append(errs, l.lastView.result.err)
+			}
+		}
+		l.lastView = nil
 		l.shutdownErr = errors.Join(errs...)
 	})
 	return l.shutdownErr

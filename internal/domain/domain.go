@@ -58,6 +58,18 @@ type EntryFilter struct {
 	Limit       int
 }
 
+// LastView identifies the local browsing context to restore on the next launch.
+// Scope is "all", "starred", or "feed"; Pane is "feeds", "articles", or "reader".
+type LastView struct {
+	Pane          string
+	Scope         string
+	FeedID        int64
+	FeedURL       string
+	EntryID       int64
+	EntryFeedURL  string
+	EntryIdentity string
+}
+
 // ParsedFeed is normalized feed content ready to store atomically.
 type ParsedFeed struct {
 	Title        string

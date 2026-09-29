@@ -163,6 +163,16 @@ honor interrupt/termination signals; the interactive UI retains Bubble Tea's sig
 and terminal handling.
 
 ### Reading configuration
+When reopening rxs, you will automatically be returned to where you left off.  To disable this
+functionality, add the following to `config.json`:
+
+```json
+{
+  "reading": {
+    "resume_last_view": false 
+  }
+}
+```
 
 Read articles are hidden from the article listing by default. Press `u` to
 show them for the current session. To show read articles initially instead, add

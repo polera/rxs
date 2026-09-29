@@ -121,6 +121,7 @@ func runArgs(args []string, stdout, stderr io.Writer) (runErr error) {
 	}
 	model.SetMarkReadOnScroll(config.Reading.MarkReadOnScroll)
 	model.SetHideRead(config.Reading.HideRead)
+	model.SetResumeLastView(config.Reading.ResumeLastView)
 	model.SetColorSchemeSaver(func(name string) error {
 		return platform.SaveColorScheme(*configPath, name)
 	})
@@ -131,7 +132,10 @@ func runArgs(args []string, stdout, stderr io.Writer) (runErr error) {
 		defer cancel()
 		runErr = errors.Join(runErr, model.Shutdown(ctx))
 	}()
-	_, err = tea.NewProgram(model).Run()
+	final, err := tea.NewProgram(model).Run()
+	if updated, ok := final.(*app.Model); ok {
+		model = updated
+	}
 	return err
 }
 

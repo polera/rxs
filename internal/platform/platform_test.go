@@ -90,6 +90,9 @@ func TestLoadConfigDefaultsWhenMissing(t *testing.T) {
 	if !config.Reading.HideRead {
 		t.Fatal("hide_read did not default to true")
 	}
+	if config.Reading.ResumeLastView {
+		t.Fatal("resume_last_view did not default to false")
+	}
 	if config.Content.FullArticles != FullArticlesOff {
 		t.Fatalf("full_articles = %q, want %q", config.Content.FullArticles, FullArticlesOff)
 	}
@@ -147,6 +150,24 @@ func TestLoadReadingConfigCanShowReadArticles(t *testing.T) {
 	}
 	if config.Reading.HideRead {
 		t.Fatal("hide_read=false was not applied")
+	}
+}
+
+func TestLoadReadingConfigCanResumeLastView(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"reading":{"resume_last_view":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil || !config.Reading.ResumeLastView || !config.Reading.HideRead {
+		t.Fatalf("reading config = %#v, err=%v", config.Reading, err)
+	}
+	if err := SaveColorScheme(path, "nord"); err != nil {
+		t.Fatal(err)
+	}
+	config, err = LoadConfig(path)
+	if err != nil || !config.Reading.ResumeLastView {
+		t.Fatalf("saving scheme lost resume setting: %#v, err=%v", config.Reading, err)
 	}
 }
 

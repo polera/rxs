@@ -19,6 +19,15 @@ type pagedStore interface {
 	Entry(context.Context, int64) (domain.Entry, error)
 }
 
+type anchoredStore interface {
+	EntryPageAt(context.Context, domain.EntryFilter, int64, int) ([]domain.Entry, bool, bool, bool, error)
+}
+
+type lastViewStore interface {
+	LoadLastView(context.Context) (domain.LastView, bool, error)
+	SaveLastView(context.Context, domain.LastView) error
+}
+
 func cursorFor(entry domain.Entry) domain.EntryCursor {
 	return domain.EntryCursor{Date: entry.SortDate, ID: entry.ID}
 }
@@ -129,24 +138,42 @@ func (m *Model) articleActionTarget() (domain.Entry, bool) {
 
 func (m *Model) loadCmd() tea.Cmd {
 	m.loadGeneration++
+	m.loadAnchorID = 0
 	return m.loadCmdWithOptions(false, false)
 }
 
 func (m *Model) loadCmdPreserving() tea.Cmd {
 	m.loadGeneration++
+	m.loadAnchorID = m.selectedEntryID()
+	if m.active == readerPane && m.readerEntry != nil {
+		m.loadAnchorID = m.readerEntry.ID
+	}
 	return m.loadCmdWithOptions(true, false)
 }
 
 func (m *Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 	filter, generation, page := m.filter, m.loadGeneration, m.page
+	anchorID := m.loadAnchorID
+	m.loadAnchorID = 0
 	feedsSnapshot := slices.Clone(m.allFeeds)
+	readLastView := initial && m.resumeLastView
+	loadFeeds := !m.pageLoading || !m.hasLoaded
+	allowShowRead := m.resuming
 	return m.lifetime.command(m.lifetime.backgroundContext(true), func(ctx context.Context) tea.Msg {
 		if err := ctx.Err(); err != nil {
 			return loadedMsg{filter: filter, generation: generation, initial: initial, err: err}
 		}
 		feeds := feedsSnapshot
 		var err error
-		if !m.pageLoading || !m.hasLoaded {
+		var view domain.LastView
+		var viewFound bool
+		var viewErr error
+		if readLastView {
+			if store, ok := m.store.(lastViewStore); ok {
+				view, viewFound, viewErr = store.LoadLastView(ctx)
+			}
+		}
+		if loadFeeds {
 			feeds, err = m.store.Feeds(ctx)
 			if err != nil {
 				return loadedMsg{filter: filter, page: page, generation: generation, initial: initial, err: err}
@@ -157,8 +184,27 @@ func (m *Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 		}
 		var entries []domain.Entry
 		hasPrevious, hasNext := false, false
+		anchorFound, showRead := false, false
 		if store, ok := m.store.(pagedStore); ok {
-			entries, err = store.EntriesPage(ctx, filter, page.cursor, page.reverse, entryPageSize+1)
+			if anchorID != 0 && page == (pageRequest{}) {
+				if anchored, ok := m.store.(anchoredStore); ok {
+					entries, hasPrevious, hasNext, anchorFound, err = anchored.EntryPageAt(ctx, filter, anchorID, entryPageSize)
+					if err == nil && !anchorFound && filter.UnreadOnly && allowShowRead {
+						visible := filter
+						visible.UnreadOnly = false
+						entries, hasPrevious, hasNext, anchorFound, err = anchored.EntryPageAt(ctx, visible, anchorID, entryPageSize)
+						showRead = anchorFound
+					}
+				}
+			}
+			if err == nil && !anchorFound {
+				entries, err = store.EntriesPage(ctx, filter, page.cursor, page.reverse, entryPageSize+1)
+			} else if err == nil {
+				return loadedMsg{feeds: feeds, entries: entries, filter: filter, page: page,
+					hasPrevious: hasPrevious, hasNext: hasNext, generation: generation, anchorID: anchorID,
+					anchorFound: true, showRead: showRead, preserveSelection: preserveSelection, initial: initial,
+					lastView: view, lastViewFound: viewFound, lastViewErr: viewErr}
+			}
 			if err == nil {
 				more := len(entries) > entryPageSize
 				if more {
@@ -177,8 +223,49 @@ func (m *Model) loadCmdWithOptions(preserveSelection, initial bool) tea.Cmd {
 		return loadedMsg{
 			feeds: feeds, entries: entries, filter: filter, page: page, hasPrevious: hasPrevious, hasNext: hasNext, generation: generation,
 			preserveSelection: preserveSelection, initial: initial, err: err,
+			lastView: view, lastViewFound: viewFound, lastViewErr: viewErr, anchorID: anchorID,
 		}
 	})
+}
+
+func (m *Model) startRestore(view domain.LastView) tea.Cmd {
+	if view.Pane != "feeds" && view.Pane != "articles" && view.Pane != "reader" {
+		return nil
+	}
+	m.feedCursor = 0
+	switch view.Scope {
+	case "all":
+	case "starred":
+		m.feedCursor = 1
+	case "feed":
+		for i, feed := range m.feeds {
+			if feed.ID == view.FeedID {
+				m.feedCursor = i + 2
+				break
+			}
+		}
+	default:
+		return nil
+	}
+	m.active = feedsPane
+	m.resumePane = feedsPane
+	if view.Pane != "feeds" {
+		m.active = articlesPane
+		m.resumePane = m.active
+		if view.Pane == "reader" {
+			m.resumePane = readerPane
+		}
+	}
+	m.feedFilter = ""
+	m.filter.Search = ""
+	m.resetPage()
+	m.applyFeedFilter()
+	m.readerEntry = nil
+	m.resuming = true
+	m.loadAnchorID = view.EntryID
+	m.resizeReader()
+	m.loadGeneration++
+	return m.loadCmdWithOptions(false, false)
 }
 
 func (m *Model) finishInitialRefresh() (tea.Model, tea.Cmd) {

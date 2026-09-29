@@ -167,6 +167,9 @@ func (m *Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
 		m.setError(msg.err)
 		if m.quitting {
 			m.quitting = false
+			m.lifetime.mu.Lock()
+			m.lifetime.lastView = nil
+			m.lifetime.mu.Unlock()
 			m.lifetime.resumeBackground()
 			m.closeOverlay()
 		}
@@ -175,7 +178,7 @@ func (m *Model) completeStateWrite(msg stateMsg) (tea.Model, tea.Cmd) {
 		return m, m.stateWriteCmd(m.stateWrites[0])
 	}
 	if m.quitting {
-		return m, tea.Quit
+		return m, m.lastViewCmd()
 	}
 	return m, m.loadCmdPreserving()
 }

@@ -94,6 +94,10 @@ type Model struct {
 	hasNext               bool
 	pageLoading           bool
 	pageLeaving           domain.Entry
+	loadAnchorID          int64
+	resumeLastView        bool
+	resuming              bool
+	resumePane            pane
 	bodyGeneration        uint64
 	feedFilter            string
 	loadGeneration        uint64
@@ -151,6 +155,12 @@ type loadedMsg struct {
 	generation        uint64
 	preserveSelection bool
 	initial           bool
+	lastView          domain.LastView
+	lastViewFound     bool
+	lastViewErr       error
+	anchorID          int64
+	anchorFound       bool
+	showRead          bool
 	err               error
 }
 type bodyMsg struct {
@@ -214,6 +224,11 @@ func (m *Model) SetMarkReadOnScroll(enabled bool) {
 // articles. The setting can still be toggled for the current session.
 func (m *Model) SetHideRead(enabled bool) {
 	m.filter.UnreadOnly = enabled
+}
+
+// SetResumeLastView enables saving and restoring the last interactive view.
+func (m *Model) SetResumeLastView(enabled bool) {
+	m.resumeLastView = enabled
 }
 
 // SetWarningStatus displays a non-blocking warning until another status
@@ -282,9 +297,13 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		if msg.generation != m.loadGeneration || msg.filter != m.filter || msg.page != m.page {
+			if m.resuming {
+				m.resuming = false
+			}
 			return m.finishInitialRefresh()
 		}
 		if msg.err != nil {
+			m.resuming = false
 			if m.pageLoading {
 				m.page = m.pagePrior
 			}
@@ -294,7 +313,7 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 				return m.finishInitialRefresh()
 			}
 			m.setError(msg.err)
-			return m, nil
+			return m.finishInitialRefresh()
 		}
 		if m.pageLoading && msg.page.cursor.ID != 0 && len(msg.entries) == 0 {
 			// Entries can disappear while a page is loading (for example, when
@@ -313,6 +332,9 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		m.bodyGeneration++
 		m.lifetime.cancelBody()
 		m.hasLoaded = true
+		if msg.showRead {
+			m.filter.UnreadOnly = false
+		}
 		m.applyFeedSearch()
 		m.reconcileFeedCursor()
 		if msg.page.reverse {
@@ -321,8 +343,16 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 			m.entryCursor = 0
 		}
 		m.clampCursors()
-		if msg.preserveSelection {
+		if msg.anchorFound {
+			m.restoreEntrySelection(msg.anchorID)
+		} else if msg.preserveSelection {
 			m.restoreEntrySelection(selectedID)
+		}
+		if m.resuming {
+			m.resuming = false
+			if m.resumePane == readerPane && msg.anchorFound {
+				m.enterReader()
+			}
 		}
 		if m.readerEntry != nil {
 			for _, entry := range m.entries {
@@ -344,6 +374,14 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 			after := stateOf(leaving)
 			after.read = true
 			stateCmd = m.queueStateWrite(leaving, after, readField)
+		}
+		if msg.initial && msg.lastViewErr != nil {
+			m.setError(msg.lastViewErr)
+		}
+		if msg.initial && msg.lastViewFound {
+			if cmd := m.startRestore(msg.lastView); cmd != nil {
+				return m, tea.Batch(stateCmd, cmd)
+			}
 		}
 		if m.initialRefreshPending && !m.busy {
 			next, refresh := m.finishInitialRefresh()
@@ -422,6 +460,8 @@ func (m *Model) Update(message tea.Msg) (next tea.Model, cmd tea.Cmd) {
 		return m, m.loadCmd()
 	case stateMsg:
 		return m.completeStateWrite(msg)
+	case lastViewMsg:
+		return m.completeLastView(msg)
 	case refreshMsg:
 		m.busy = false
 		if m.quitting {

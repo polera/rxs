@@ -48,6 +48,7 @@ type AppearanceConfig struct {
 type ReadingConfig struct {
 	MarkReadOnScroll bool `json:"mark_read_on_scroll"`
 	HideRead         bool `json:"hide_read"`
+	ResumeLastView   bool `json:"resume_last_view"`
 }
 
 // BrowserConfig selects either the operating system browser or an interactive
@@ -62,7 +63,7 @@ func DefaultConfig() Config {
 	return Config{
 		Browser:    BrowserConfig{Mode: BrowserSystem},
 		Appearance: AppearanceConfig{ColorScheme: DefaultColorScheme},
-		Reading:    ReadingConfig{HideRead: true},
+		Reading:    ReadingConfig{HideRead: true, ResumeLastView: true},
 		Content:    ContentConfig{FullArticles: FullArticlesOff},
 	}
 }

@@ -31,12 +31,20 @@ func (m *Model) updateOverlay(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "y", "enter":
 			m.quitting = true
 			m.lifetime.cancelBackground()
+			var progressCmd tea.Cmd
 			if m.active == readerPane && m.readerEntry != nil && !m.readerEntry.Unloaded {
 				after := stateOf(*m.readerEntry)
 				after.progress = m.reader.ScrollPercent()
-				return m, m.queueStateWrite(*m.readerEntry, after, progressField)
+				progressCmd = m.queueStateWrite(*m.readerEntry, after, progressField)
+			}
+			viewCmd := m.queueLastView()
+			if progressCmd != nil {
+				return m, progressCmd
 			}
 			if len(m.stateWrites) == 0 {
+				if viewCmd != nil {
+					return m, viewCmd
+				}
 				return m, tea.Quit
 			}
 			return m, nil
