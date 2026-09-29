@@ -90,8 +90,8 @@ func TestLoadConfigDefaultsWhenMissing(t *testing.T) {
 	if !config.Reading.HideRead {
 		t.Fatal("hide_read did not default to true")
 	}
-	if config.Reading.ResumeLastView {
-		t.Fatal("resume_last_view did not default to false")
+	if !config.Reading.ResumeLastView {
+		t.Fatal("resume_last_view did not default to true")
 	}
 	if config.Content.FullArticles != FullArticlesOff {
 		t.Fatalf("full_articles = %q, want %q", config.Content.FullArticles, FullArticlesOff)
