@@ -6,11 +6,8 @@
   </picture>
 </h1>
 
-`rxs` is a local-first, keyboard-driven RSS, Atom, and JSON Feed reader for the
-terminal. It stores downloaded articles in SQLite, starts without an account,
-and remains useful offline. On launch it shows the saved library immediately,
-refreshes subscriptions automatically, and can optionally retrieve readable
-full text when a feed contains only a summary.
+`rxs` is a lightweight TUI RSS reader supporting RSS, Atom, and JSON feeds.  Articles are 
+stored in a local SQLite database.
 
 ## Screenshots
 
@@ -69,31 +66,15 @@ rxs add https://example.com/feed.xml
 
 The database lives in the platform user-data directory by default (`$XDG_DATA_HOME/rxs/rxs.db` or `~/.local/share/rxs/rxs.db` on Linux and FreeBSD). Pass `-db PATH` to use a different database. No configuration file is required.
 
-Database paths are literal filenames, not SQLite connection strings.
-
-Use only one rxs process per database. Concurrent schema migration and multiple
-instances sharing a database are not supported. On Linux and FreeBSD, a relative
-`XDG_DATA_HOME` is ignored; the default is `~/.local/share/rxs`.
-
 ## Use
 
 Press `a`, type or paste an HTTP or HTTPS feed URL with your terminal's paste
-shortcut, and press Enter. The feed is fetched immediately. Downloaded article
-text is searchable and available after the network goes away. LaTeX expressions in
-article text are detected automatically and shown with terminal-friendly Unicode
-symbols; common inline and display delimiters and MathJax `math/tex` blocks are
-supported. Math fallback text embedded in HTML `<object>` and math-image `alt`
-attributes is also rendered, as used by feeds such as Eli Bendersky's blog. Practical
-support includes vectors and accents (`\vec`, `\hat`, `\widehat`), blackboard and
-calligraphic letters, fractions, roots, scripts, common operators/relations, angle
-brackets, and flattened `aligned`/`cases` environments. This remains a readable linear
-terminal approximation rather than a full TeX typesetter; unknown commands stay visible.
+shortcut, and press Enter. 
 
-Each time the interactive UI starts, rxs loads saved subscriptions and articles
-first, then refreshes every feed automatically. The refresh runs concurrently
-and reports new articles, full-text expansions, and per-feed failures in the
-status line without interrupting navigation. Use `r` or `R` for an additional
-refresh at any time.
+- Downloaded article text is searchable offline. 
+- LaTeX expressions in article text are detected automatically and shown with terminal-friendly Unicode
+symbols.  Since this is a basic expression detection, unknown symbols will show as-is.
+
 
 | Key | Action |
 | --- | --- |
@@ -121,21 +102,10 @@ refresh at any time.
 | `q` | Ask to quit, or close help and confirmation dialogs |
 | Esc | Close an input dialog |
 
-Copying uses the terminal's OSC52 clipboard support. The terminal must allow
-clipboard writes for `y` to update the system clipboard.
+Copying uses the terminal's clipboard support. The terminal needs to allow
+clipboard writes for `y` in order to update the system clipboard.
 
-OPML export includes all saved subscriptions, regardless of the active feed filter.
-Exports and configuration changes are staged before replacing existing files, so a
-failed write does not truncate the previous file. Existing symlinks retain their links
-and update their targets; dangling symlinks are rejected.
-
-OPML import accepts a regular UTF-8 file (or a symlink to one) containing one complete
-document, at most 20 MiB including its optional BOM and trailing data. Trailing XML
-whitespace, comments, and processing instructions are allowed; extra roots and malformed
-suffixes are rejected before any subscriptions are added. XML declarations must use
-version 1.0. Bare or external `SYSTEM`/`PUBLIC` OPML DOCTYPE declarations are supported,
-but internal DTD subsets are rejected and external DTDs are never fetched. If adding
-subscriptions subsequently fails, the status reports how many were already added.
+OPML export includes all saved subscriptions.
 
 The layout adapts to the terminal: browsing shows all three panes when wide, feeds and articles at medium widths, and one pane on narrow terminals. Opening the reader collapses the feed and article panes at every width so the article uses the full terminal. An unread article is marked read when you reach its bottom and then press `h`, Left, or Shift-Tab (when no link is selected) to return to the article list.
 
@@ -151,16 +121,7 @@ even after restarting rxs or using a different terminal size.
 
 Confirming quit waits for pending read, star, and reading-position writes. If a state
 write fails while quitting, rxs stays open and reports the error instead of exiting.
-Background loads and refreshes are canceled separately, and admitted operations finish
-before the database closes. Superseded article loads are canceled as well as ignored.
 
-If the terminal UI exits unexpectedly, rxs attempts a five-second final flush of state
-changes already queued. Scroll position not yet captured by leaving the reader or
-confirming quit is not included. On timeout, operations are canceled but still joined
-before database close, so unresponsive filesystem calls can delay exit beyond five
-seconds. Forced termination cannot guarantee persistence. CLI `add` and `upgrade`
-honor interrupt/termination signals; the interactive UI retains Bubble Tea's signal
-and terminal handling.
 
 ### Reading configuration
 When reopening rxs, you will automatically be returned to where you left off.  To disable this
@@ -204,7 +165,7 @@ anything.
 
 ### Full-article downloads
 
-Full-article enrichment is off by default. To expand feed items that appear to
+Full-article download  is off by default. To expand feed items that appear to
 contain only a summary or truncation, enable automatic downloads in
 `config.json`:
 
@@ -216,20 +177,6 @@ contain only a summary or truncation, enable automatic downloads in
 }
 ```
 
-This setting applies to both the interactive reader and `rxs add`. In `auto`
-mode, rxs makes an additional request to an article's linked page only when the
-feed copy looks partial, then stores readable full text as a separate overlay
-for offline reading and search. The reader marks enriched entries as `full text`.
-Complete feed entries do not cause an article request, and failed downloads
-leave the feed-provided content intact. Attempts are retried only after the
-item's URL, feed content, or update time changes.
-
-Enrichment processes static HTML only. It does not run JavaScript, retain
-cookies, send URL credentials, or bypass authentication and paywalls. Private,
-loopback, link-local, and cloud-metadata network destinations are rejected,
-including redirect targets. Use `"full_articles": "off"` (the default) to
-disable the additional requests. Per-feed overrides and a manual retry command
-are possible follow-ups but are not currently available.
 
 ### Browser configuration
 
@@ -269,12 +216,12 @@ preview the built-in schemes live. Enter applies the choice and writes it to the
 active configuration file; Esc restores the previous scheme. The foreground and
 background are both set for named schemes so light schemes remain readable.
 `catppuccin-latte`, `gruvbox-light`, and `solarized-light` suit light terminals;
-`high-contrast` is a black-and-white scheme whose colors clear WCAG AA. Use
+`high-contrast` is a black-and-white scheme. Use
 `-config PATH` to load and persist the setting in another file.
 
 Refreshes use conditional HTTP requests when servers provide `ETag` or `Last-Modified`, enforce time and size limits, follow at most five redirects, and record per-feed errors without interrupting navigation. A bounded worker pool fetches feeds concurrently; SQLite writes are serialized and transactional. Full-article enrichment handles at most ten entries per feed refresh and also backfills eligible stored entries after a `304 Not Modified` response.
 
-## Develop
+## Development
 
 ```sh
 go test ./...
