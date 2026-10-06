@@ -45,7 +45,7 @@ fuzz:
 bench:
 	go test ./internal/app ./internal/render ./internal/store ./internal/feed ./internal/article -run '^$$' -bench . -benchmem -count=10
 
-checks: license-check vet race staticcheck osv-scanner gosec
+checks: license-check vet test staticcheck osv-scanner gosec
 
 staticcheck:
 	"$(STATICCHECK)" ./...
